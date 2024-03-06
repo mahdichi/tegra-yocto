@@ -1,0 +1,1482 @@
+From 2fec76ce3402e9ecb15210fb1c5c4cac47dfbdd0 Mon Sep 17 00:00:00 2001
+From: mahdichi <mahdichi@gmail.com>
+Date: Thu, 7 Mar 2024 00:53:34 +0330
+Subject: [PATCH] add adv7482 driver
+
+---
+ nvidia/drivers/media/i2c/Kconfig   |  10 +
+ nvidia/drivers/media/i2c/Makefile  |   1 +
+ nvidia/drivers/media/i2c/adv7482.c | 940 +++++++++++++++++++++++++++++
+ nvidia/drivers/media/i2c/adv7482.h | 483 +++++++++++++++
+ 4 files changed, 1434 insertions(+)
+ create mode 100644 nvidia/drivers/media/i2c/adv7482.c
+ create mode 100644 nvidia/drivers/media/i2c/adv7482.h
+
+diff --git a/nvidia/drivers/media/i2c/Kconfig b/nvidia/drivers/media/i2c/Kconfig
+index 326dbb096017..d9c17e7044b1 100644
+--- a/nvidia/drivers/media/i2c/Kconfig
++++ b/nvidia/drivers/media/i2c/Kconfig
+@@ -3,6 +3,16 @@ if VIDEO_V4L2
+ menu "NVIDIA overlay Encoders, decoders, sensors and other helper chips"
+ 	visible if !MEDIA_SUBDRV_AUTOSELECT || COMPILE_TEST
+ 
++config VIDEO_ADV7482
++	tristate "ADV7482 support"
++	depends on I2C && VIDEO_V4L2 && VIDEO_V4L2_SUBDEV_API
++	---help---
++	This is a Video4Linux2 sensor-level driver for the 
++	ADV7482
++
++	To compile this driver as a module, choose M here: the module
++	will be called adv7482.
++	
+ config VIDEO_IMX185
+ 	tristate "IMX185 camera sensor support"
+ 	depends on I2C && VIDEO_V4L2 && VIDEO_V4L2_SUBDEV_API
+diff --git a/nvidia/drivers/media/i2c/Makefile b/nvidia/drivers/media/i2c/Makefile
+index c6d34e8077e3..eef83ccd05f7 100644
+--- a/nvidia/drivers/media/i2c/Makefile
++++ b/nvidia/drivers/media/i2c/Makefile
+@@ -3,6 +3,7 @@ subdir-ccflags-y += -Werror
+ ccflags-y += -I$(srctree)/drivers/media/platform/tegra
+ ccflags-y += -I$(srctree)/drivers/video/tegra/camera
+ 
++obj-$(CONFIG_VIDEO_IMX185) += adv7482.o
+ obj-$(CONFIG_VIDEO_IMX185) += imx185.o
+ obj-$(CONFIG_VIDEO_IMX185) += imx185_v1.o
+ obj-$(CONFIG_VIDEO_IMX477) += imx477.o
+diff --git a/nvidia/drivers/media/i2c/adv7482.c b/nvidia/drivers/media/i2c/adv7482.c
+new file mode 100644
+index 000000000000..8825fc017118
+--- /dev/null
++++ b/nvidia/drivers/media/i2c/adv7482.c
+@@ -0,0 +1,940 @@
++#include <linux/slab.h>
++#include <linux/uaccess.h>
++#include <linux/gpio.h>
++#include <linux/module.h>
++#include <linux/seq_file.h>
++#include <linux/of.h>
++#include <linux/of_device.h>
++#include <linux/of_gpio.h>
++#include <linux/of_graph.h>
++
++#include <media/tegra_v4l2_camera.h>
++#include <media/tegracam_core.h>
++
++#include "adv7482.h"
++
++#include <soc/tegra/chip-id.h>
++#include <soc/tegra/fuse.h>
++
++#define TEGRA210_INT_CID 5
++#define TEGRA186_INT_CID 6
++#define TEGRA194_INT_CID 7
++
++static int adv7482_power_on(struct camera_common_data *s_data);
++
++static const u32 ctrl_cid_list[] = {
++	TEGRA_CAMERA_CID_SENSOR_MODE_ID,
++};
++
++struct adv7482
++{
++	struct i2c_client *i2c_client;
++	struct i2c_client *i2c_clients[ADV748X_PAGE_MAX];
++	struct regmap *regmap[ADV748X_PAGE_MAX];
++
++	struct v4l2_subdev *subdev;
++	u32 frame_length;
++	s64 last_wdr_et_val;
++	struct camera_common_data *s_data;
++	struct tegracam_device *tc_dev;
++};
++
++static const struct of_device_id adv7482_of_match[] = {
++	{
++		.compatible = "adi,adv7482",
++	},
++	{},
++};
++MODULE_DEVICE_TABLE(of, adv7482_of_match);
++
++unsigned long long tegra_chip_uid2(void)
++{
++
++	u64 uid = 0ull;
++	u32 reg;
++	u32 cid;
++	u32 vendor;
++	u32 fab;
++	u32 lot;
++	u32 wafer;
++	u32 x;
++	u32 y;
++	u32 i;
++
++	/*
++	 * This used to be so much easier in prior chips. Unfortunately, there
++	 * is no one-stop shopping for the unique id anymore. It must be
++	 *  constructed from various bits of information burned into the fuses
++	 *  during the manufacturing process. The 64-bit unique id is formed
++	 *  by concatenating several bit fields. The notation used for the
++	 *  various fields is <fieldname:size_in_bits> with the UID composed
++	 *  thusly:
++	 *
++	 *  <CID:4><VENDOR:4><FAB:6><LOT:26><WAFER:6><X:9><Y:9>
++	 *
++	 * Where:
++	 *
++	 *	Field    Bits  Position Data
++	 *	-------  ----  -------- ----------------------------------------
++	 *	CID        4     60     Chip id
++	 *	VENDOR     4     56     Vendor code
++	 *	FAB        6     50     FAB code
++	 *	LOT       26     24     Lot code (5-digit base-36-coded-decimal,
++	 *				re-encoded to 26 bits binary)
++	 *	WAFER      6     18     Wafer id
++	 *	X          9      9     Wafer X-coordinate
++	 *	Y          9      0     Wafer Y-coordinate
++	 *	-------  ----
++	 *	Total     64
++	 */
++
++	reg = tegra_get_chip_id();
++	switch (reg)
++	{
++	case TEGRA210:
++		cid = TEGRA210_INT_CID;
++		break;
++	case TEGRA186:
++		cid = TEGRA186_INT_CID;
++		break;
++	case TEGRA194:
++		cid = TEGRA194_INT_CID;
++		break;
++	default:
++		cid = 0;
++		break;
++	};
++
++	tegra_fuse_readl(FUSE_OPT_VENDOR_CODE, &reg);
++	vendor = reg & FUSE_OPT_VENDOR_CODE_MASK;
++	tegra_fuse_readl(FUSE_OPT_FAB_CODE, &reg);
++	fab = reg & FUSE_OPT_FAB_CODE_MASK;
++
++	/* Lot code must be re-encoded from a 5 digit base-36 'BCD' number
++	 * to a binary number.
++	 */
++	lot = 0;
++	tegra_fuse_readl(FUSE_OPT_LOT_CODE_0, &reg);
++	reg = reg << 2;
++
++	for (i = 0; i < 5; ++i)
++	{
++		u32 digit = (reg & 0xFC000000) >> 26;
++
++		WARN_ON(digit >= 36);
++		lot *= 36;
++		lot += digit;
++		reg <<= 6;
++	}
++
++	tegra_fuse_readl(FUSE_OPT_WAFER_ID, &reg);
++	wafer = reg & FUSE_OPT_WAFER_ID_MASK;
++	tegra_fuse_readl(FUSE_OPT_X_COORDINATE, &reg);
++	x = reg & FUSE_OPT_X_COORDINATE_MASK;
++	tegra_fuse_readl(FUSE_OPT_Y_COORDINATE, &reg);
++	y = reg & FUSE_OPT_Y_COORDINATE_MASK;
++
++	uid = ((unsigned long long)cid << 60ull) | ((unsigned long long)vendor << 56ull) | ((unsigned long long)fab << 50ull) | ((unsigned long long)lot << 24ull) | ((unsigned long long)wafer << 18ull) | ((unsigned long long)x << 9ull) | ((unsigned long long)y << 0ull);
++	return uid;
++}
++
++/* -----------------------------------------------------------------------------
++ * Register manipulation
++ */
++
++static const struct regmap_config sensor_regmap_config[] = {
++	{
++		.name = "io",
++		.reg_bits = 8,
++		.val_bits = 8,
++		.max_register = 0xff,
++		.cache_type = REGCACHE_NONE,
++	},
++	{
++		.name = "dpll",
++		.reg_bits = 8,
++		.val_bits = 8,
++		.max_register = 0xff,
++		.cache_type = REGCACHE_NONE,
++	},
++	{
++		.name = "cp",
++		.reg_bits = 8,
++		.val_bits = 8,
++		.max_register = 0xff,
++		.cache_type = REGCACHE_NONE,
++	},
++	{
++		.name = "hdmi",
++		.reg_bits = 8,
++		.val_bits = 8,
++		.max_register = 0xff,
++		.cache_type = REGCACHE_NONE,
++	},
++	{
++		.name = "edid",
++		.reg_bits = 8,
++		.val_bits = 8,
++		.max_register = 0xff,
++		.cache_type = REGCACHE_NONE,
++	},
++	{
++		.name = "repeater",
++		.reg_bits = 8,
++		.val_bits = 8,
++		.max_register = 0xff,
++		.cache_type = REGCACHE_NONE,
++	},
++	{
++		.name = "infoframe",
++		.reg_bits = 8,
++		.val_bits = 8,
++		.max_register = 0xff,
++		.cache_type = REGCACHE_NONE,
++	},
++	{
++		.name = "cec",
++		.reg_bits = 8,
++		.val_bits = 8,
++		.max_register = 0xff,
++		.cache_type = REGCACHE_NONE,
++	},
++	{
++		.name = "sdp",
++		.reg_bits = 8,
++		.val_bits = 8,
++		.max_register = 0xff,
++		.cache_type = REGCACHE_NONE,
++	},
++	{
++		.name = "txb",
++		.reg_bits = 8,
++		.val_bits = 8,
++		.max_register = 0xff,
++		.cache_type = REGCACHE_NONE,
++	},
++	{
++		.name = "txa",
++		.reg_bits = 8,
++		.val_bits = 8,
++		.max_register = 0xff,
++		.cache_type = REGCACHE_NONE,
++	},
++};
++
++static int adv7482_configure_regmap(struct adv7482 *priv, int region)
++{
++	int err;
++
++	// adv_dbg(priv, " %s %d\n", __func__, __LINE__);
++
++	if (!priv->i2c_clients[region])
++		return -ENODEV;
++
++	priv->regmap[region] =
++		devm_regmap_init_i2c(priv->i2c_clients[region],
++							 &sensor_regmap_config[region]);
++
++	if (IS_ERR(priv->regmap[region]))
++	{
++		err = PTR_ERR(priv->regmap[region]);
++		adv_err(priv,
++				"Error initializing regmap %d with error %d\n",
++				region, err);
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
++static int adv7482_read_reg(struct camera_common_data *s_data,
++							u16 addr, u8 *val)
++{
++	int err = 0;
++	u32 reg_val = 0;
++
++	u8 page = (addr >> 8) & 0xFF;
++	u8 reg = addr & 0xFF;
++	struct adv7482 *priv = (struct adv7482 *)s_data->priv;
++	struct i2c_client *client = priv->i2c_clients[page];
++
++	err = regmap_read(priv->regmap[page], reg, &reg_val);
++	*val = reg_val & 0xFF;
++
++	if (err)
++	{
++		adv_err(priv, "error reading %02x, %02x\n",
++				client->addr, reg);
++		return err;
++	}
++
++	return err;
++}
++
++static int adv7482_read_reg2(struct adv7482 *priv, int page, u8 reg)
++{
++	int err = 0;
++	u32 reg_val = 0;
++	struct camera_common_data *s_data = priv->s_data;
++	struct device *dev = s_data->dev;
++	struct i2c_client *client = priv->i2c_clients[page];
++
++	err = regmap_read(priv->regmap[page], reg, &reg_val);
++	reg_val &= 0xFF;
++
++	if (err)
++	{
++		dev_dbg(dev, "error reading %02x, %02x\n",
++				client->addr, reg);
++		return err;
++	}
++
++	return reg_val;
++}
++
++static int adv7482_write_reg(struct camera_common_data *s_data,
++							 u16 addr, u8 value)
++{
++
++	int err;
++	struct device *dev = s_data->dev;
++	struct adv7482 *priv = (struct adv7482 *)s_data->priv;
++	u8 page = (addr >> 8) & 0xFF;
++	u8 reg = addr & 0xFF;
++
++	err = regmap_write(priv->regmap[page], reg, value);
++	if (err)
++		dev_err(dev, "%s: i2c write failed, 0x%x = %x\n",
++				__func__, reg, value);
++
++	return err;
++}
++
++static int adv7482_write_reg2(struct adv7482 *priv, int page,
++							  u8 reg, u8 value)
++{
++
++	int err;
++	struct device *dev = priv->s_data->dev;
++
++	err = regmap_write(priv->regmap[page], reg, value);
++	if (err)
++		dev_err(dev, "%s: i2c write failed, 0x%x = %x\n",
++				__func__, reg, value);
++
++	return err;
++}
++
++static struct i2c_client *adv7482_dummy_client(struct adv7482 *priv,
++											   u8 addr, u8 io_reg)
++{
++	struct i2c_client *client = priv->i2c_client;
++	// adv_dbg(priv, " %s %d\n", __func__, __LINE__);
++
++	if (addr)
++		io_write(priv, io_reg, addr << 1);
++
++	return i2c_new_dummy(client->adapter, io_read(priv, io_reg) >> 1);
++}
++
++static void adv7482_unregister_clients(struct adv7482 *priv)
++{
++	unsigned int i;
++	adv_dbg(priv, " %s %d\n", __func__, __LINE__);
++
++	for (i = 1; i < ARRAY_SIZE(priv->i2c_clients); ++i)
++	{
++		if (priv->i2c_clients[i])
++			i2c_unregister_device(priv->i2c_clients[i]);
++	}
++}
++
++static int adv7482_initialise_clients(struct adv7482 *priv)
++{
++	int i;
++	int ret;
++	// adv_dbg(priv, " %s %d\n", __func__, __LINE__);
++
++	for (i = ADV748X_PAGE_DPLL; i < ADV748X_PAGE_MAX; ++i)
++	{
++		priv->i2c_clients[i] =
++			adv7482_dummy_client(priv, adv7482_i2c_addresses[i],
++								 ADV748X_IO_SLAVE_ADDR_BASE + i);
++		if (priv->i2c_clients[i] == NULL)
++		{
++			adv_err(priv, "failed to create i2c client %u\n", i);
++			return -ENOMEM;
++			continue;
++		}
++
++		ret = adv7482_configure_regmap(priv, i);
++		if (ret)
++			return ret;
++	}
++
++	return 0;
++}
++
++static int adv7482_write_table(struct adv7482 *priv,
++							   const adv7482_reg *table)
++{
++	int ret;
++	// adv_dbg(state, " %s %d\n", __func__, __LINE__);
++
++	while (table->page != ADV748X_PAGE_EOR)
++	{
++		if (table->page == ADV748X_PAGE_WAIT)
++		{
++			msleep(table->value);
++		}
++		else
++		{
++			ret = adv7482_write_reg2(priv, table->page,
++									 table->reg, table->value);
++			if (ret < 0)
++			{
++				adv_err(priv,
++						"Error regs page: 0x%02x reg: 0x%02x\n",
++						table->page, table->reg);
++				return ret;
++			}
++		}
++		table++;
++	}
++
++	return 0;
++}
++
++static int adv7482_identify_chip(struct adv7482 *priv)
++{
++	int msb, lsb;
++	// adv_dbg(priv, " %s %d\n", __func__, __LINE__);
++
++	lsb = io_read(priv, ADV748X_IO_CHIP_REV_ID_1);
++	msb = io_read(priv, ADV748X_IO_CHIP_REV_ID_2);
++
++	if (lsb < 0 || msb < 0)
++	{
++		adv_dbg(priv, "Failed to read chip revision\n");
++		return -EIO;
++	}
++
++	// adv_dbg(priv, "chip found @ 0x%02x revision %02x%02x\n",
++	// 		priv->i2c_client->addr << 1, lsb, msb);
++
++	return 0;
++}
++
++int adv7482_txa_power(struct adv7482 *priv, bool on)
++{
++	int val;
++	//adv_dbg(priv, "%s %d, on:%d \n", __func__, __LINE__, on);
++
++	val = txa_read(priv, ADV748X_CSI_FS_AS_LS);
++	if (val < 0)
++		return val;
++
++	/*
++	 * This test against BIT(6) is not documented by the datasheet, but was
++	 * specified in the downstream driver.
++	 * Track with a WARN_ONCE to determine if it is ever set by HW.
++	 */
++	WARN_ONCE((on && val & ADV748X_CSI_FS_AS_LS_UNKNOWN),
++			  "Enabling with unknown bit set");
++
++	if (on)
++		return adv7482_write_table(priv, adv7482_power_up_txa_4lane);
++	else
++		return adv7482_write_table(priv, adv7482_power_down_txa_4lane);
++}
++
++static int adv7482_board_setup(struct adv7482 *priv)
++{
++	int err = 0;
++	struct camera_common_data *s_data = priv->s_data;
++	struct device *dev = s_data->dev;
++
++	// gpio_set_value(38, 1);
++	gpio_set_value(151, 0);
++	msleep(1000);
++	gpio_set_value(151, 1);
++
++	dev_info(dev, "get reset gpio\n");
++	err = adv7482_power_on(s_data);
++	if (err) {
++		adv_err(priv, "Error reseting chip");
++	}
++
++	err = adv7482_configure_regmap(priv, ADV748X_PAGE_IO);
++	if (err)
++	{
++		adv_err(priv, "Error configuring IO regmap region");
++		return -ENODEV;
++	}
++
++	err = adv7482_identify_chip(priv);
++	if (err)
++	{
++		adv_dbg(priv, "Failed to identify chip");
++		return -ENODEV;
++	}
++
++	/* Configure remaining pages as I2C clients with regmap access */
++	err = adv7482_initialise_clients(priv);
++	if (err)
++	{
++		adv_err(priv, "Failed to setup client regmap pages");
++		return -ENODEV;
++	}
++
++	err = adv7482_write_table(priv, adv7482_sw_reset);
++	if (err < 0)
++		return err;
++
++	err = adv7482_write_table(priv, adv7482_set_slave_address);
++	if (err < 0)
++		return err;
++
++	/* Init and power down TXA */
++	err = adv7482_write_table(priv, adv7482_init_ttl_txa_4lane);
++	// err = adv7482_write_table(priv, adv7482_init_txa_4lane_free_run);
++	if (err)
++		return err;
++
++	adv7482_txa_power(priv, 0);
++
++	// gpio_set_value(38, 0);
++
++
++	// powerup all subsystem and disable HDMI rx
++	// io_write(priv, ADV748X_IO_PD, 0);
++
++	/* Enable 4-lane CSI Tx only & Pixel Port */
++	// io_write(priv, ADV748X_IO_10, ADV748X_IO_10_CSI4_EN | ADV748X_IO_10_PIX_OUT_EN);
++
++	/* Disable buffering of measured parameters in HDMI/MHL mode.
++	Free run standard determined by CP_VID_STD[5:0] and CP_V_FREQ[2:0]
++	*/
++	// cp_write(priv, ADV748X_CP_CLMP_POS, ADV748X_CP_CLMP_POS_DIS_AUTO);
++
++	return 0;
++}
++
++/* -----------------------------------------------------------------------------
++ * tegracam_ctrl_ops
++ */
++
++static int adv7482_set_group_hold(struct tegracam_device *tc_dev, bool val)
++{
++	/* lt6911uxc does not support group hold */
++	return 0;
++}
++
++static struct tegracam_ctrl_ops adv7482_ctrl_ops = {
++	.numctrls = ARRAY_SIZE(ctrl_cid_list),
++	.ctrl_cid_list = ctrl_cid_list,
++	.set_group_hold = adv7482_set_group_hold,
++};
++
++/* -----------------------------------------------------------------------------
++ * camera_common_sensor_ops
++ */
++
++static int adv7482_power_on(struct camera_common_data *s_data)
++{
++	int err = 0;
++	struct camera_common_power_rail *pw = s_data->power;
++	struct camera_common_pdata *pdata = s_data->pdata;
++	struct device *dev = s_data->dev;
++
++	dev_dbg(dev, " %s %d\n", __func__, __LINE__);
++		
++	if (pdata && pdata->power_on) {
++		err = pdata->power_on(pw);
++		if (err)
++			dev_err(dev, "%s failed.\n", __func__);
++		else
++			pw->state = SWITCH_ON;
++		return err;
++	}
++
++	/*exit reset mode: XCLR */
++	// if (pw->reset_gpio) {
++	// 	gpio_set_value(pw->reset_gpio, 0);
++	// 	usleep_range(30000, 50000);
++	// 	gpio_set_value(pw->reset_gpio, 1);
++	// 	usleep_range(30000, 50000);
++	// }
++
++	pw->state = SWITCH_ON;
++	return 0;
++}
++
++static int adv7482_power_off(struct camera_common_data *s_data)
++{
++	int err = 0;
++	struct camera_common_power_rail *pw = s_data->power;
++	struct camera_common_pdata *pdata = s_data->pdata;
++	struct device *dev = s_data->dev;
++
++	dev_dbg(dev, "%s: power off\n", __func__);
++
++	if (pdata && pdata->power_off) {
++		err = pdata->power_off(pw);
++		if (!err)
++			goto power_off_done;
++		else
++			dev_err(dev, "%s failed.\n", __func__);
++		return err;
++	}
++	/* enter reset mode: XCLR */
++	// usleep_range(10000, 20000);
++	// if (pw->reset_gpio)
++	// 	gpio_set_value(pw->reset_gpio, 0);
++
++	power_off_done:
++	pw->state = SWITCH_OFF;
++
++	return 0;
++}
++
++static int adv7482_power_get(struct tegracam_device *tc_dev)
++{	
++	int err = 0;
++
++	// struct device *dev = tc_dev->dev;
++	// struct camera_common_data *s_data = tc_dev->s_data;
++	// struct camera_common_power_rail *pw = s_data->power;
++	// struct camera_common_pdata *pdata = s_data->pdata;
++	// const char *mclk_name;
++	// struct clk *parent;
++	
++	// dev_dbg(dev, " %s %d\n", __func__, __LINE__);
++
++
++	// mclk_name = pdata->mclk_name ?
++	// 	    pdata->mclk_name : "extperiph1";
++	// pw->mclk = devm_clk_get(dev, mclk_name);
++	// if (IS_ERR(pw->mclk)) {
++	// 	dev_err(dev, "unable to get clock %s\n", mclk_name);
++	// 	return PTR_ERR(pw->mclk);
++	// }
++
++	// parent = devm_clk_get(dev, "pllp_grtba");
++	// if (IS_ERR(parent))
++	// 	dev_err(dev, "devm_clk_get failed for pllp_grtba");
++	// else
++	// 	clk_set_parent(pw->mclk, parent);
++
++	// pw->reset_gpio = pdata->reset_gpio;
++
++	// pw->state = SWITCH_OFF;
++	return err;
++}
++
++static int adv7482_power_put(struct tegracam_device *tc_dev)
++{
++	// struct camera_common_data *s_data = tc_dev->s_data;
++	// struct camera_common_power_rail *pw = s_data->power;
++
++	// struct device *dev = s_data->dev;
++	// dev_dbg(dev, " %s %d\n", __func__, __LINE__);
++
++	// if (unlikely(!pw))
++	// 	return -EFAULT;
++
++	return 0;
++}
++
++static struct camera_common_pdata *adv7482_parse_dt(struct tegracam_device *tc_dev)
++{
++	struct device *dev = tc_dev->dev;
++	struct device_node *np = dev->of_node;
++	struct camera_common_pdata *board_priv_pdata;
++	const struct of_device_id *match;
++	struct camera_common_pdata *ret = NULL;
++	int err;
++	int gpio;
++
++	if (!np)
++		return NULL;
++
++	match = of_match_device(adv7482_of_match, dev);
++	if (!match)
++	{
++		dev_err(dev, "Failed to find matching dt id\n");
++		return NULL;
++	}
++
++	board_priv_pdata = devm_kzalloc(dev,
++									sizeof(*board_priv_pdata), GFP_KERNEL);
++	if (!board_priv_pdata)
++		return NULL;
++
++	// err = of_property_read_string(np, "mclk",
++	// 							  &board_priv_pdata->mclk_name);
++	// if (err)
++	// 	dev_err(dev, "mclk not in DT\n");
++
++	dev_info(dev, "check reset gpio\n");
++	gpio = of_get_named_gpio(np, "reset-gpios", 0);
++	if (gpio < 0)
++	{
++		if (gpio == -EPROBE_DEFER)
++			ret = ERR_PTR(-EPROBE_DEFER);
++		dev_err(dev, "reset-gpios not found %d\n", err);
++		goto error;
++	}
++	board_priv_pdata->reset_gpio = (unsigned int)gpio;
++
++	return board_priv_pdata;
++
++error:
++	devm_kfree(dev, board_priv_pdata);
++	return ret;
++}
++
++static int adv7482_set_mode(struct tegracam_device *tc_dev)
++{
++	// struct imx185 *priv = (struct imx185 *)tegracam_get_privdata(tc_dev);
++	// struct camera_common_data *s_data = tc_dev->s_data;
++	// struct device *dev = tc_dev->dev;
++	// struct device_node *np = dev->of_node;
++	// bool limit_analog_gain = false;
++	// const struct of_device_id *match;
++	// int err;
++
++	// match = of_match_device(imx185_of_match, dev);
++	// if (!match) {
++	// 	dev_err(dev, "Failed to find matching dt id\n");
++	// 	return -EINVAL;
++	// }
++
++	// limit_analog_gain = of_property_read_bool(np, "limit_analog_gain");
++
++	// err = imx185_write_table(priv, mode_table[s_data->mode_prop_idx]);
++	// if (err)
++	// 	return err;
++
++	// if (limit_analog_gain) {
++	// 	err = imx185_write_reg(priv->s_data,
++	// 		IMX185_ANALOG_GAIN_LIMIT_ADDR,
++	// 		IMX185_ANALOG_GAIN_LIMIT_VALUE);
++	// 	if (err)
++	// 		return err;
++	// }
++
++	return 0;
++}
++
++static int adv7482_start_streaming(struct tegracam_device *tc_dev)
++{
++	struct adv7482 *priv = (struct adv7482 *)tegracam_get_privdata(tc_dev);
++	int err = 0;
++	//int reg;
++
++	// static int flag=0;
++
++	adv_dbg(priv, "%s %d\n", __func__, __LINE__);
++	err = adv7482_txa_power(priv, 1);
++	if (err)
++		return err;
++
++	// msleep(1000);
++	// gpio_set_value(38, 0);
++	// msleep(2000);
++
++
++	return 0;
++}
++
++static int adv7482_stop_streaming(struct tegracam_device *tc_dev)
++{
++	struct adv7482 *priv = (struct adv7482 *)tegracam_get_privdata(tc_dev);
++	int err = 0;
++
++	adv_dbg(priv, "%s %d\n", __func__, __LINE__);
++
++	// gpio_set_value(38, 1);
++	err = adv7482_txa_power(priv, 0);
++	if (err)
++		return err;
++	msleep(100);
++
++
++	return 0;
++}
++
++static struct camera_common_sensor_ops adv7482_common_ops = {
++	// number of formats and format table
++	.numfrmfmts = ARRAY_SIZE(adv7482_frmfmt),
++	.frmfmt_table = adv7482_frmfmt,
++
++	// power controls
++	.power_on = adv7482_power_on,
++	.power_off = adv7482_power_off,
++	.power_get = adv7482_power_get,
++	.power_put = adv7482_power_put,
++
++	// register read/write control
++	.write_reg = adv7482_write_reg,
++	.read_reg = adv7482_read_reg,
++
++	// device tree parsing
++	.parse_dt = adv7482_parse_dt,
++
++	// Sensor streaming controls
++	.set_mode = adv7482_set_mode,
++	.start_streaming = adv7482_start_streaming,
++	.stop_streaming = adv7482_stop_streaming,
++};
++
++/* -----------------------------------------------------------------------------
++ * v4l2_subdev_internal_ops
++ */
++
++static int adv7482_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
++{
++	struct i2c_client *client = v4l2_get_subdevdata(sd);
++
++	dev_dbg(&client->dev, "%s:\n", __func__);
++
++	return 0;
++}
++
++static const struct v4l2_subdev_internal_ops adv7482_subdev_internal_ops = {
++	.open = adv7482_open,
++};
++/* -----------------------------------------------------------------------------
++ * i2c driver
++ */
++
++static int adv7482_probe(struct i2c_client *client,
++						 const struct i2c_device_id *id)
++{
++
++	struct device *dev = &client->dev;
++	struct tegracam_device *tc_dev;
++	struct adv7482 *priv;
++	int err;
++
++	unsigned long long uid;
++
++	printk("hello\n");
++	uid = tegra_chip_uid2();
++	printk("uid:%lld\n", uid);
++
++	// if (uid != 5865240326735136271)
++	// {
++	// 	printk("driver error\n");
++	// 	return -1;
++	// }
++	// printk("driver ok\n");
++
++	dev_info(dev, "probing v4l2 sensor\n");
++	//dev_info(KERN_WARNING " %s %d\n", __func__, __LINE__);
++
++	if (!IS_ENABLED(CONFIG_OF) || !client->dev.of_node)
++		return -EINVAL;
++
++	/* Check if the adapter supports the needed features */
++	if (!i2c_check_functionality(client->adapter, I2C_FUNC_SMBUS_BYTE_DATA))
++		return -EIO;
++
++	priv = devm_kzalloc(dev, sizeof(struct adv7482), GFP_KERNEL);
++	if (!priv)
++		return -ENOMEM;
++
++	tc_dev = devm_kzalloc(dev,
++						  sizeof(struct tegracam_device), GFP_KERNEL);
++	if (!tc_dev)
++		return -ENOMEM;
++
++	/* adv7482 has multiple i2c client and tegracam just have one client
++	   so we manage all i2c clients sepratly and for compatibility add first
++	   clint to tegracam
++	*/
++	tc_dev->client = client;
++	priv->i2c_client = client;
++	priv->i2c_clients[ADV748X_PAGE_IO] = client;
++	tc_dev->dev = dev;
++	strncpy(tc_dev->name, "adv7482", sizeof(tc_dev->name));
++
++	/* old driver ?? */
++	i2c_set_clientdata(client, priv);
++
++	tc_dev->dev_regmap_config = &sensor_regmap_config[0];
++	tc_dev->sensor_ops = &adv7482_common_ops;
++	tc_dev->v4l2sd_internal_ops = &adv7482_subdev_internal_ops;
++	tc_dev->tcctrl_ops = &adv7482_ctrl_ops;
++
++	err = tegracam_device_register(tc_dev);
++	if (err)
++	{
++		dev_err(dev, "tegra camera driver registration failed\n");
++		return err;
++	}
++
++	priv->tc_dev = tc_dev;
++	priv->s_data = tc_dev->s_data;
++	priv->subdev = &tc_dev->s_data->subdev;
++	tegracam_set_privdata(tc_dev, (void *)priv);
++
++	// printk(KERN_WARNING "priv addr  %p\n",(void *)priv);
++	// printk(KERN_WARNING "dev addr   %p\n",(void *)dev);
++	// printk(KERN_WARNING "priv addr  %p\n",(void *)tc_dev->s_data->priv);
++
++	err = adv7482_board_setup(priv);
++	if (err)
++	{
++		tegracam_device_unregister(tc_dev);
++		dev_err(dev, "board setup failed\n");
++		return err;
++	}
++
++	err = tegracam_v4l2subdev_register(tc_dev, true);
++	if (err)
++	{
++		dev_err(dev, "tegra camera subdev registration failed\n");
++		return err;
++	}
++
++	dev_info(dev, "Detected ADV7482 sensor\n");
++
++	return err;
++}
++
++static int adv7482_remove(struct i2c_client *client)
++{
++	struct camera_common_data *s_data = to_camera_common_data(&client->dev);
++	struct adv7482 *priv = (struct adv7482 *)s_data->priv;
++
++	adv7482_unregister_clients(priv);
++	tegracam_v4l2subdev_unregister(priv->tc_dev);
++	tegracam_device_unregister(priv->tc_dev);
++
++	return 0;
++}
++
++static const struct i2c_device_id adv7482_id[] = {
++	{"adv7482", 0},
++	{},
++};
++MODULE_DEVICE_TABLE(i2c, adv7482_id);
++
++static struct i2c_driver adv7482_i2c_driver = {
++	.driver = {
++		.name = "adv7482",
++		.owner = THIS_MODULE,
++		.of_match_table = of_match_ptr(adv7482_of_match),
++	},
++	.probe = adv7482_probe,
++	.remove = adv7482_remove,
++	.id_table = adv7482_id,
++};
++
++module_i2c_driver(adv7482_i2c_driver);
++
++MODULE_AUTHOR("mahdichi <mahdichi@gmail.com>");
++MODULE_DESCRIPTION("adv7482 video decoder");
++MODULE_LICENSE("GPL v2");
+diff --git a/nvidia/drivers/media/i2c/adv7482.h b/nvidia/drivers/media/i2c/adv7482.h
+new file mode 100644
+index 000000000000..9c04e892dca7
+--- /dev/null
++++ b/nvidia/drivers/media/i2c/adv7482.h
+@@ -0,0 +1,483 @@
++#include <linux/i2c.h>
++#include <media/camera_common.h>
++#include <linux/miscdevice.h>
++
++#ifndef _ADV7482_H_
++#define _ADV7482_H_
++
++/* I2C slave addresses */
++#define ADV748X_I2C_IO 0x70		   /* IO Map */
++#define ADV748X_I2C_DPLL 0x26	   /* DPLL Map */
++#define ADV748X_I2C_CP 0x22		   /* CP Map */
++#define ADV748X_I2C_HDMI 0x34	   /* HDMI Map */
++#define ADV748X_I2C_EDID 0x36	   /* EDID Map */
++#define ADV748X_I2C_REPEATER 0x32  /* HDMI RX Repeater Map */
++#define ADV748X_I2C_INFOFRAME 0x31 /* HDMI RX InfoFrame Map */
++#define ADV748X_I2C_CEC 0x41	   /* CEC Map */
++#define ADV748X_I2C_SDP 0x79	   /* SDP Map */
++#define ADV748X_I2C_TXB 0x48	   /* CSI-TXB Map */
++#define ADV748X_I2C_TXA 0x4a	   /* CSI-TXA Map */
++
++enum adv7482_page
++{
++	ADV748X_PAGE_IO,
++	ADV748X_PAGE_DPLL,
++	ADV748X_PAGE_CP,
++	ADV748X_PAGE_HDMI,
++	ADV748X_PAGE_EDID,
++	ADV748X_PAGE_REPEATER,
++	ADV748X_PAGE_INFOFRAME,
++	ADV748X_PAGE_CEC,
++	ADV748X_PAGE_SDP,
++	ADV748X_PAGE_TXB,
++	ADV748X_PAGE_TXA,
++	ADV748X_PAGE_MAX,
++
++	/* Fake pages for register sequences */
++	ADV748X_PAGE_WAIT, /* Wait x msec */
++	ADV748X_PAGE_EOR,  /* End Mark */
++};
++
++/* Default addresses for the I2C pages */
++static int adv7482_i2c_addresses[ADV748X_PAGE_MAX] = {
++	ADV748X_I2C_IO,
++	ADV748X_I2C_DPLL,
++	ADV748X_I2C_CP,
++	ADV748X_I2C_HDMI,
++	ADV748X_I2C_EDID,
++	ADV748X_I2C_REPEATER,
++	ADV748X_I2C_INFOFRAME,
++	ADV748X_I2C_CEC,
++	ADV748X_I2C_SDP,
++	ADV748X_I2C_TXB,
++	ADV748X_I2C_TXA,
++};
++
++#define adv_err(a, fmt, arg...) dev_err(a->s_data->dev, fmt, ##arg)
++#define adv_info(a, fmt, arg...) dev_warn(a->s_data->dev, fmt, ##arg)
++#define adv_dbg(a, fmt, arg...) dev_warn(a->s_data->dev, fmt, ##arg)
++
++/* Register handling */
++
++#define io_read(s, r) adv7482_read_reg2(s, ADV748X_PAGE_IO, r)
++#define io_write(s, r, v) adv7482_write_reg2(s, ADV748X_PAGE_IO, r, v)
++#define io_clrset(s, r, m, v) io_write(s, r, (io_read(s, r) & ~m) | v)
++
++#define hdmi_read(s, r) adv7482_read_reg2(s, ADV748X_PAGE_HDMI, r)
++#define hdmi_read16(s, r, m) (((hdmi_read(s, r) << 8) | hdmi_read(s, r + 1)) & m)
++#define hdmi_write(s, r, v) adv7482_write_reg2(s, ADV748X_PAGE_HDMI, r, v)
++
++#define repeater_read(s, r) adv7482_read_reg2(s, ADV748X_PAGE_REPEATER, r)
++#define repeater_write(s, r, v) adv7482_write_reg2(s, ADV748X_PAGE_REPEATER, r, v)
++
++#define sdp_read(s, r) adv7482_read_reg2(s, ADV748X_PAGE_SDP, r)
++#define sdp_write(s, r, v) adv7482_write_reg2(s, ADV748X_PAGE_SDP, r, v)
++#define sdp_clrset(s, r, m, v) sdp_write(s, r, (sdp_read(s, r) & ~m) | v)
++
++#define cp_read(s, r) adv7482_read_reg2(s, ADV748X_PAGE_CP, r)
++#define cp_write(s, r, v) adv7482_write_reg2(s, ADV748X_PAGE_CP, r, v)
++#define cp_clrset(s, r, m, v) cp_write(s, r, (cp_read(s, r) & ~m) | v)
++
++#define txa_read(s, r) adv7482_read_reg2(s, ADV748X_PAGE_TXA, r)
++
++/* Register Mappings */
++
++/* IO Map */
++#define ADV748X_IO_PD 0x00 /* power down controls */
++#define ADV748X_IO_PD_RX_EN BIT(6)
++
++#define ADV748X_IO_REG_04 0x04
++#define ADV748X_IO_REG_04_FORCE_FR BIT(0) /* Force CP free-run */
++
++#define ADV748X_IO_DATAPATH 0x03 /* datapath cntrl */
++#define ADV748X_IO_DATAPATH_VFREQ_M 0x70
++#define ADV748X_IO_DATAPATH_VFREQ_SHIFT 4
++
++#define ADV748X_IO_VID_STD 0x05
++
++#define ADV748X_IO_10 0x10 /* io_reg_10 */
++#define ADV748X_IO_10_CSI4_EN BIT(7)
++#define ADV748X_IO_10_CSI1_EN BIT(6)
++#define ADV748X_IO_10_PIX_OUT_EN BIT(5)
++
++#define ADV748X_IO_CHIP_REV_ID_1 0xdf
++#define ADV748X_IO_CHIP_REV_ID_2 0xe0
++
++#define ADV748X_IO_SLAVE_ADDR_BASE 0xf2
++
++/* HDMI RX Map */
++#define ADV748X_HDMI_LW1 0x07 /* line width_1 */
++#define ADV748X_HDMI_LW1_VERT_FILTER BIT(7)
++#define ADV748X_HDMI_LW1_DE_REGEN BIT(5)
++#define ADV748X_HDMI_LW1_WIDTH_MASK 0x1fff
++
++#define ADV748X_HDMI_F0H1 0x09 /* field0 height_1 */
++#define ADV748X_HDMI_F0H1_HEIGHT_MASK 0x1fff
++
++#define ADV748X_HDMI_F1H1 0x0b /* field1 height_1 */
++#define ADV748X_HDMI_F1H1_INTERLACED BIT(5)
++
++#define ADV748X_HDMI_HFRONT_PORCH 0x20 /* hsync_front_porch_1 */
++#define ADV748X_HDMI_HFRONT_PORCH_MASK 0x1fff
++
++#define ADV748X_HDMI_HSYNC_WIDTH 0x22 /* hsync_pulse_width_1 */
++#define ADV748X_HDMI_HSYNC_WIDTH_MASK 0x1fff
++
++#define ADV748X_HDMI_HBACK_PORCH 0x24 /* hsync_back_porch_1 */
++#define ADV748X_HDMI_HBACK_PORCH_MASK 0x1fff
++
++#define ADV748X_HDMI_VFRONT_PORCH 0x2a /* field0_vs_front_porch_1 */
++#define ADV748X_HDMI_VFRONT_PORCH_MASK 0x3fff
++
++#define ADV748X_HDMI_VSYNC_WIDTH 0x2e /* field0_vs_pulse_width_1 */
++#define ADV748X_HDMI_VSYNC_WIDTH_MASK 0x3fff
++
++#define ADV748X_HDMI_VBACK_PORCH 0x32 /* field0_vs_back_porch_1 */
++#define ADV748X_HDMI_VBACK_PORCH_MASK 0x3fff
++
++#define ADV748X_HDMI_TMDS_1 0x51 /* hdmi_reg_51 */
++#define ADV748X_HDMI_TMDS_2 0x52 /* hdmi_reg_52 */
++
++/* HDMI RX Repeater Map */
++#define ADV748X_REPEATER_EDID_SZ 0x70 /* primary_edid_size */
++#define ADV748X_REPEATER_EDID_SZ_SHIFT 4
++
++#define ADV748X_REPEATER_EDID_CTL 0x74		/* hdcp edid controls */
++#define ADV748X_REPEATER_EDID_CTL_EN BIT(0) /* man_edid_a_enable */
++
++/* SDP Main Map */
++#define ADV748X_SDP_INSEL 0x00 /* user_map_rw_reg_00 */
++
++#define ADV748X_SDP_VID_SEL 0x02 /* user_map_rw_reg_02 */
++#define ADV748X_SDP_VID_SEL_MASK 0xf0
++#define ADV748X_SDP_VID_SEL_SHIFT 4
++
++/* Contrast - Unsigned*/
++#define ADV748X_SDP_CON 0x08 /* user_map_rw_reg_08 */
++#define ADV748X_SDP_CON_MIN 0
++#define ADV748X_SDP_CON_DEF 128
++#define ADV748X_SDP_CON_MAX 255
++
++/* Brightness - Signed */
++#define ADV748X_SDP_BRI 0x0a /* user_map_rw_reg_0a */
++#define ADV748X_SDP_BRI_MIN -128
++#define ADV748X_SDP_BRI_DEF 0
++#define ADV748X_SDP_BRI_MAX 127
++
++/* Hue - Signed, inverted*/
++#define ADV748X_SDP_HUE 0x0b /* user_map_rw_reg_0b */
++#define ADV748X_SDP_HUE_MIN -127
++#define ADV748X_SDP_HUE_DEF 0
++#define ADV748X_SDP_HUE_MAX 128
++
++/* Test Patterns / Default Values */
++#define ADV748X_SDP_DEF 0x0c			   /* user_map_rw_reg_0c */
++#define ADV748X_SDP_DEF_VAL_EN BIT(0)	   /* Force free run mode */
++#define ADV748X_SDP_DEF_VAL_AUTO_EN BIT(1) /* Free run when no signal */
++
++#define ADV748X_SDP_MAP_SEL 0x0e /* user_map_rw_reg_0e */
++#define ADV748X_SDP_MAP_SEL_RO_MAIN 1
++
++/* Free run pattern select */
++#define ADV748X_SDP_FRP 0x14
++#define ADV748X_SDP_FRP_MASK GENMASK(3, 1)
++
++/* Saturation */
++#define ADV748X_SDP_SD_SAT_U 0xe3 /* user_map_rw_reg_e3 */
++#define ADV748X_SDP_SD_SAT_V 0xe4 /* user_map_rw_reg_e4 */
++#define ADV748X_SDP_SAT_MIN 0
++#define ADV748X_SDP_SAT_DEF 128
++#define ADV748X_SDP_SAT_MAX 255
++
++/* SDP RO Main Map */
++#define ADV748X_SDP_RO_10 0x10
++#define ADV748X_SDP_RO_10_IN_LOCK BIT(0)
++
++/* CP Map */
++#define ADV748X_CP_PAT_GEN 0x37 /* int_pat_gen_1 */
++#define ADV748X_CP_PAT_GEN_EN BIT(7)
++
++/* Contrast Control - Unsigned */
++#define ADV748X_CP_CON 0x3a	   /* contrast_cntrl */
++#define ADV748X_CP_CON_MIN 0   /* Minimum contrast */
++#define ADV748X_CP_CON_DEF 128 /* Default */
++#define ADV748X_CP_CON_MAX 255 /* Maximum contrast */
++
++/* Saturation Control - Unsigned */
++#define ADV748X_CP_SAT 0x3b	   /* saturation_cntrl */
++#define ADV748X_CP_SAT_MIN 0   /* Minimum saturation */
++#define ADV748X_CP_SAT_DEF 128 /* Default */
++#define ADV748X_CP_SAT_MAX 255 /* Maximum saturation */
++
++/* Brightness Control - Signed */
++#define ADV748X_CP_BRI 0x3c		/* brightness_cntrl */
++#define ADV748X_CP_BRI_MIN -128 /* Luma is -512d */
++#define ADV748X_CP_BRI_DEF 0	/* Luma is 0 */
++#define ADV748X_CP_BRI_MAX 127	/* Luma is 508d */
++
++/* Hue Control */
++#define ADV748X_CP_HUE 0x3d	   /* hue_cntrl */
++#define ADV748X_CP_HUE_MIN 0   /* -90 degree */
++#define ADV748X_CP_HUE_DEF 0   /* -90 degree */
++#define ADV748X_CP_HUE_MAX 255 /* +90 degree */
++
++#define ADV748X_CP_VID_ADJ 0x3e			 /* vid_adj_0 */
++#define ADV748X_CP_VID_ADJ_ENABLE BIT(7) /* Enable colour controls */
++
++#define ADV748X_CP_DE_POS_HIGH 0x8b /* de_pos_adj_6 */
++#define ADV748X_CP_DE_POS_HIGH_SET BIT(6)
++#define ADV748X_CP_DE_POS_END_LOW 0x8c	 /* de_pos_adj_7 */
++#define ADV748X_CP_DE_POS_START_LOW 0x8d /* de_pos_adj_8 */
++
++#define ADV748X_CP_VID_ADJ_2 0x91
++#define ADV748X_CP_VID_ADJ_2_INTERLACED BIT(6)
++#define ADV748X_CP_VID_ADJ_2_INTERLACED_3D BIT(4)
++
++#define ADV748X_CP_CLMP_POS 0xc9			/* clmp_pos_cntrl_4 */
++#define ADV748X_CP_CLMP_POS_DIS_AUTO BIT(0) /* dis_auto_param_buff */
++
++/* CSI : TXA/TXB Maps */
++#define ADV748X_CSI_VC_REF 0x0d /* csi_tx_top_reg_0d */
++#define ADV748X_CSI_VC_REF_SHIFT 6
++
++#define ADV748X_CSI_FS_AS_LS 0x1e			/* csi_tx_top_reg_1e */
++#define ADV748X_CSI_FS_AS_LS_UNKNOWN BIT(6) /* Undocumented bit */
++
++/**
++ * struct adv7482_reg - Register write instruction
++ * @page:		Regmap page identifier
++ * @reg:		I2C register
++ * @value:		value to write to @page at @reg
++ */
++struct adv7482_reg8_page
++{
++	u8 page;
++	u8 reg;
++	u8 value;
++};
++
++#define adv7482_reg struct adv7482_reg8_page
++
++/* -----------------------------------------------------------------------------
++ * TXA registers configuration table
++ */
++
++static adv7482_reg adv7482_power_up_txa_4lane[] = {
++
++	{ADV748X_PAGE_TXA, 0x00, 0x84}, /* Enable 4-lane MIPI */
++	{ADV748X_PAGE_TXA, 0x00, 0xa4}, /* Set Auto DPHY Timing */
++	//{ADV748X_PAGE_TXA, 0xF0, 0x00},
++
++	{ADV748X_PAGE_TXA, 0x31, 0x82},	 /* ADI Required Write */
++	{ADV748X_PAGE_TXA, 0x1e, 0x40},	 /* ADI Required Write */
++	{ADV748X_PAGE_TXA, 0xda, 0x03},	 /* i2c_mipi_pll_en - 1'b1 */
++	{ADV748X_PAGE_WAIT, 0x00, 0x02}, /* delay 2 */
++	{ADV748X_PAGE_TXA, 0x00, 0x24},	 /* Power-up CSI-TX */
++	{ADV748X_PAGE_WAIT, 0x00, 0x01}, /* delay 1 */
++	{ADV748X_PAGE_TXA, 0xc1, 0x2b},	 /* ADI Required Write */
++	{ADV748X_PAGE_WAIT, 0x00, 0x01}, /* delay 1 */
++	{ADV748X_PAGE_TXA, 0x31, 0x80},	 /* ADI Required Write */
++
++	{ADV748X_PAGE_EOR, 0xff, 0xff} /* End of register table */
++};
++
++static adv7482_reg adv7482_power_down_txa_4lane[] = {
++
++	{ADV748X_PAGE_TXA, 0x31, 0x82}, /* ADI Required Write */
++	{ADV748X_PAGE_TXA, 0x1e, 0x00}, /* ADI Required Write */
++	{ADV748X_PAGE_TXA, 0x00, 0x84}, /* Enable 4-lane MIPI */
++	{ADV748X_PAGE_TXA, 0xda, 0x00}, /* i2c_mipi_pll_en - 1'b1 */
++	{ADV748X_PAGE_TXA, 0xc1, 0x3b}, /* ADI Required Write */
++
++	{ADV748X_PAGE_EOR, 0xff, 0xff} /* End of register table */
++};
++
++/* -----------------------------------------------------------------------------
++ * HW setup registers configuration table
++ */
++
++static adv7482_reg adv7482_sw_reset[] = {
++
++	{ADV748X_PAGE_IO, 0xff, 0xff},	 /* SW reset */
++	{ADV748X_PAGE_WAIT, 0x00, 0x05}, /* delay 5 */
++	{ADV748X_PAGE_IO, 0x01, 0x76},	 /* ADI Required Write */
++	{ADV748X_PAGE_IO, 0xf2, 0x01},	 /* Enable I2C Read Auto-Increment */
++	{ADV748X_PAGE_EOR, 0xff, 0xff}	 /* End of register table */
++};
++
++static adv7482_reg adv7482_set_slave_address[] = {
++
++	{ADV748X_PAGE_IO, 0xf3, ADV748X_I2C_DPLL << 1},		 // 0x4C
++	{ADV748X_PAGE_IO, 0xf4, ADV748X_I2C_CP << 1},		 // 0x44
++	{ADV748X_PAGE_IO, 0xf5, ADV748X_I2C_HDMI << 1},		 // 0x68
++	{ADV748X_PAGE_IO, 0xf6, ADV748X_I2C_EDID << 1},		 // 0x6C
++	{ADV748X_PAGE_IO, 0xf7, ADV748X_I2C_REPEATER << 1},	 // 0x64
++	{ADV748X_PAGE_IO, 0xf8, ADV748X_I2C_INFOFRAME << 1}, // 0x62
++	{ADV748X_PAGE_IO, 0xfa, ADV748X_I2C_CEC << 1},		 // 0x82
++	{ADV748X_PAGE_IO, 0xfb, ADV748X_I2C_SDP << 1},		 // 0xF2
++	{ADV748X_PAGE_IO, 0xfc, ADV748X_I2C_TXB << 1},		 // 0x90
++	{ADV748X_PAGE_IO, 0xfd, ADV748X_I2C_TXA << 1},		 // 0x94
++	{ADV748X_PAGE_EOR, 0xff, 0xff}						 /* End of register table */
++};
++
++/* Supported Formats For Script Below */
++
++/*  :06-02 8-Bit SDR TTL to MIPI TX-A CSI 4-Lane -
++	480i,576i,480p,576p,720p,1080i - YUV422 8-Bit:
++*/
++static adv7482_reg adv7482_init_ttl_txa_4lane[] = {
++
++	// {ADV748X_PAGE_IO, 0xff, 0xff},	/* SW reset */
++	// {ADV748X_PAGE_WAIT, 0x00, 0x05},/* delay 5 */
++	// {ADV748X_PAGE_IO, 0x01, 0x76},	/* ADI Required Write */
++	// {ADV748X_PAGE_IO, 0x05, 0x4A},	/* Setting Vid_Std to 720x480p60 */
++	// {ADV748X_PAGE_IO, 0x00, 0x30},	/* Disable chip powerdown - powerdown Rx */
++	// {ADV748X_PAGE_IO, 0xf2, 0x01},	/* Enable I2C Read Auto-Increment */
++
++	// {ADV748X_PAGE_IO, 0xf3, ADV748X_I2C_DPLL << 1},     // 0x4C
++	// {ADV748X_PAGE_IO, 0xf4, ADV748X_I2C_CP << 1},       // 0x44
++	// {ADV748X_PAGE_IO, 0xf5, ADV748X_I2C_HDMI << 1},     // 0x68
++	// {ADV748X_PAGE_IO, 0xf6, ADV748X_I2C_EDID << 1},     // 0x6C
++	// {ADV748X_PAGE_IO, 0xf7, ADV748X_I2C_REPEATER << 1}, // 0x64
++	// {ADV748X_PAGE_IO, 0xf8, ADV748X_I2C_INFOFRAME << 1},// 0x62
++	// {ADV748X_PAGE_IO, 0xfa, ADV748X_I2C_CEC << 1},      // 0x82
++	// {ADV748X_PAGE_IO, 0xfb, ADV748X_I2C_SDP << 1},      // 0xF2
++	// {ADV748X_PAGE_IO, 0xfc, ADV748X_I2C_TXB << 1},      // 0x90
++	// {ADV748X_PAGE_IO, 0xfd, ADV748X_I2C_TXA << 1},      // 0x94
++
++	{ADV748X_PAGE_IO, 0x05, 0x5E}, /* Setting Vid_Std to 720x480p60 */
++	{ADV748X_PAGE_IO, 0x00, 0x30}, /* Disable chip powerdown - powerdown Rx */
++	{ADV748X_PAGE_IO, 0xf2, 0x01}, /* Enable I2C Read Auto-Increment */
++
++	{ADV748X_PAGE_IO, 0x06, 0x11}, /* Configure Pix Inputs */
++	{ADV748X_PAGE_IO, 0x10, 0x84}, /* Enable 4-lane CSI Tx */
++	{ADV748X_PAGE_IO, 0x0E, 0xF3}, /* ADI Required Write */
++
++	{ADV748X_PAGE_TXA, 0x00, 0x84},	 /* Enable 4-lane MIPI */
++	{ADV748X_PAGE_TXA, 0x00, 0xA4},	 /* Set Auto DPHY Timing */
++	{ADV748X_PAGE_TXA, 0xd6, 0x07},	 /* ADI Required Write */
++	{ADV748X_PAGE_TXA, 0xc4, 0x0a},	 /* ADI Required Write */
++	{ADV748X_PAGE_TXA, 0x71, 0x33},	 /* ADI Required Write */
++	{ADV748X_PAGE_TXA, 0x72, 0x11},	 /* ADI Required Write */
++	{ADV748X_PAGE_TXA, 0xf0, 0x00},	 /* i2c_dphy_pwdn - 1'b0 */
++	{ADV748X_PAGE_TXA, 0x31, 0x82},	 /* ADI Required Write */
++	{ADV748X_PAGE_TXA, 0x1e, 0x40},	 /* ADI Required Write */
++	{ADV748X_PAGE_TXA, 0xda, 0x03},	 /* i2c_mipi_pll_en - 1'b1 */
++	{ADV748X_PAGE_WAIT, 0x00, 0x02}, /* delay 2 */
++	{ADV748X_PAGE_TXA, 0x00, 0x24},	 /* Power-up CSI-TX */
++	{ADV748X_PAGE_WAIT, 0x00, 0x01}, /* delay 1 */
++	{ADV748X_PAGE_TXA, 0xc1, 0x2b},	 /* ADI Required Write */
++	{ADV748X_PAGE_WAIT, 0x00, 0x01}, /* delay 1 */
++	{ADV748X_PAGE_TXA, 0x31, 0x80},	 /* ADI Required Write */
++
++	{ADV748X_PAGE_EOR, 0xff, 0xff} /* End of register table */
++};
++
++#ifdef FALSE
++/* Supported Formats For Script Below */
++/*  :08-07 Free-run MIPI TxA CSI 4-Lane - YUV422 8-Bit, 1280x720p 60Hz: */
++static adv7482_reg adv7482_init_txa_4lane_free_run[] = {
++	/* Disable chip powerdown & Enable HDMI Rx block */
++	{ADV748X_PAGE_IO, 0x00, 0x40},
++
++	{ADV748X_PAGE_REPEATER, 0x40, 0x83}, /* Enable HDCP 1.1 */
++
++	{ADV748X_PAGE_HDMI, 0x00, 0x08},/* Foreground Channel = A */
++	{ADV748X_PAGE_HDMI, 0x98, 0xff},/* ADI Required Write */
++	{ADV748X_PAGE_HDMI, 0x99, 0xa3},/* ADI Required Write */
++	{ADV748X_PAGE_HDMI, 0x9a, 0x00},/* ADI Required Write */
++	{ADV748X_PAGE_HDMI, 0x9b, 0x0a},/* ADI Required Write */
++	{ADV748X_PAGE_HDMI, 0x9d, 0x40},/* ADI Required Write */
++	{ADV748X_PAGE_HDMI, 0xcb, 0x09},/* ADI Required Write */
++	{ADV748X_PAGE_HDMI, 0x3d, 0x10},/* ADI Required Write */
++	{ADV748X_PAGE_HDMI, 0x3e, 0x7b},/* ADI Required Write */
++	{ADV748X_PAGE_HDMI, 0x3f, 0x5e},/* ADI Required Write */
++	{ADV748X_PAGE_HDMI, 0x4e, 0xfe},/* ADI Required Write */
++	{ADV748X_PAGE_HDMI, 0x4f, 0x18},/* ADI Required Write */
++	{ADV748X_PAGE_HDMI, 0x57, 0xa3},/* ADI Required Write */
++	{ADV748X_PAGE_HDMI, 0x58, 0x04},/* ADI Required Write */
++	{ADV748X_PAGE_HDMI, 0x85, 0x10},/* ADI Required Write */
++
++	{ADV748X_PAGE_HDMI, 0x83, 0x00},/* Enable All Terminations */
++	{ADV748X_PAGE_HDMI, 0xa3, 0x01},/* ADI Required Write */
++	{ADV748X_PAGE_HDMI, 0xbe, 0x00},/* ADI Required Write */
++
++	{ADV748X_PAGE_HDMI, 0x6c, 0x01},/* HPA Manual Enable */
++	{ADV748X_PAGE_HDMI, 0xf8, 0x01},/* HPA Asserted */
++	{ADV748X_PAGE_HDMI, 0x0f, 0x00},/* Audio Mute Speed Set to Fastest */
++	/* (Smallest Step Size) */
++
++	{ADV748X_PAGE_IO, 0x04, 0x00},	/* YCrCb output */
++	{ADV748X_PAGE_IO, 0x12, 0xf2},	/* CSC Depends on ip Packets - SDR422 set */
++	{ADV748X_PAGE_IO, 0x17, 0x80},	/* Luma & Chroma can reach 254d */
++	{ADV748X_PAGE_IO, 0x03, 0x86},	/* CP-Insert_AV_Code */
++
++	{ADV748X_PAGE_CP, 0x7c, 0x00},	/* ADI Required Write */
++
++	{ADV748X_PAGE_IO, 0x0c, 0xe0},	/* Enable LLC_DLL & Double LLC Timing */
++	{ADV748X_PAGE_IO, 0x0e, 0xdd},	/* LLC/PIX/SPI PINS TRISTATED AUD */
++	/* Outputs Enabled */
++	{ADV748X_PAGE_IO, 0x10, 0xa0},	/* Enable 4-lane CSI Tx & Pixel Port */
++
++	{ADV748X_PAGE_TXA, 0x00, 0x84},	/* Enable 2-lane MIPI */
++	{ADV748X_PAGE_TXA, 0x00, 0xa4},	/* Set Auto DPHY Timing */
++	{ADV748X_PAGE_TXA, 0xdb, 0x10},	/* ADI Required Write */
++	{ADV748X_PAGE_TXA, 0xd6, 0x07},	/* ADI Required Write */
++	{ADV748X_PAGE_TXA, 0xc4, 0x0a},	/* ADI Required Write */
++	{ADV748X_PAGE_TXA, 0x71, 0x33},	/* ADI Required Write */
++	{ADV748X_PAGE_TXA, 0x72, 0x11},	/* ADI Required Write */
++	{ADV748X_PAGE_TXA, 0xf0, 0x00},	/* i2c_dphy_pwdn - 1'b0 */
++
++	{ADV748X_PAGE_TXA, 0x31, 0x82},	/* ADI Required Write */
++	{ADV748X_PAGE_TXA, 0x1e, 0x40},	/* ADI Required Write */
++	{ADV748X_PAGE_TXA, 0xda, 0x01},	/* i2c_mipi_pll_en - 1'b1 */
++
++	{ADV748X_PAGE_WAIT, 0x00, 0x02},/* delay 2 */
++	{ADV748X_PAGE_TXA, 0x00, 0x24}, /* Power-up CSI-TX */
++	{ADV748X_PAGE_WAIT, 0x00, 0x01},/* delay 1 */
++
++	{ADV748X_PAGE_TXA, 0xc1, 0x2b},	/* ADI Required Write */
++	{ADV748X_PAGE_WAIT, 0x00, 0x01},/* delay 1 */
++	{ADV748X_PAGE_TXA, 0x31, 0x80},	/* ADI Required Write */
++
++	{ADV748X_PAGE_CP, 0xC9, 0x2D},	/* use cp_vid_std when free run */
++	// {ADV748X_PAGE_IO, 0x05, 0x53},	/* cp_vid_std set to 1280x720p@60 */	
++	{ADV748X_PAGE_IO, 0x05, 0x5E},	/* cp_vid_std set to 1080p 1920x1080@30 */	
++	// {ADV748X_PAGE_IO, 0x03, 0x86},	/* Insert AV codes, enable CP free run mode */
++	{ADV748X_PAGE_IO, 0x03, 0xA6},	/* Insert AV codes, 30HZ enable CP free run mode */
++	{ADV748X_PAGE_IO, 0x00, 0x00},	/* Disable HDMI Rx */
++	{ADV748X_PAGE_IO, 0x04, 0x80},	/* Force CP to free run (YCbCr) */
++	{ADV748X_PAGE_CP, 0x37, 0x81},	/*  Output Colorbars Pattern */
++	// {ADV748X_PAGE_CP, 0x37, 0x82},	/*  Output Ramp grey */
++
++	{ADV748X_PAGE_EOR, 0xff, 0xff}	/* End of register table */
++};
++#endif
++
++enum
++{
++	ADV7482_MODE_1920X1080_25FPS,
++	ADV7482_MODE_TEST_PATTERN
++};
++
++static const int adv7482_25fps[] = {
++	25,
++};
++
++static const int adv7482_30fps[] = {
++	30,
++};
++
++static const int adv7482_60fps[] = {
++	60,
++};
++
++/* WARNING: frmfmt ordering need to match mode definition in
++ * device tree!
++ */
++static const struct camera_common_frmfmt adv7482_frmfmt[] = {
++	{{1920, 1080}, adv7482_25fps, 1, 0, ADV7482_MODE_1920X1080_25FPS},
++	/* Add modes with no device tree support after below */
++};
++
++#endif /* _ADV7482_H_ */
