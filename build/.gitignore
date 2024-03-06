@@ -1,0 +1,7 @@
+cache
+sstate-cache
+tmp
+workspace
+
+*.log
+conf/templateconf.cfg

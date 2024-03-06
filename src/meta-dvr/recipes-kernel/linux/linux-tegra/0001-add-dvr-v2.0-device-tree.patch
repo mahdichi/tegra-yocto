@@ -1,0 +1,1988 @@
+From cac2c62fd796f224030ec90142c3e32828ff0e36 Mon Sep 17 00:00:00 2001
+From: mahdichi <mahdichi@gmail.com>
+Date: Wed, 6 Mar 2024 22:55:42 +0330
+Subject: [PATCH] add dvr v2.0 device tree
+
+---
+ nvidia/platform/t210/porg/kernel-dts/Makefile |    2 +-
+ .../tegra210-porg-adv7482.dtsi                |  304 ++++
+ .../tegra210-porg-adv7482_i2c.dtsi            |   47 +
+ .../tegra210-porg-sdi_out.dtsi                |   45 +
+ ...ra210-jetson_nano_module-gpio-default.dtsi |   85 ++
+ .../tegra210-jetson_nano_module-pinmux.dtsi   | 1347 +++++++++++++++++
+ .../tegra210-p3448-0002-dvr-v02.dts           |   75 +
+ .../tegra210-porg-p3448-common.dtsi           |    2 +-
+ 8 files changed, 1905 insertions(+), 2 deletions(-)
+ create mode 100644 nvidia/platform/t210/porg/kernel-dts/porg-platforms-dvr/tegra210-porg-adv7482.dtsi
+ create mode 100644 nvidia/platform/t210/porg/kernel-dts/porg-platforms-dvr/tegra210-porg-adv7482_i2c.dtsi
+ create mode 100644 nvidia/platform/t210/porg/kernel-dts/porg-platforms-dvr/tegra210-porg-sdi_out.dtsi
+ create mode 100644 nvidia/platform/t210/porg/kernel-dts/tegra210-jetson_nano_module-gpio-default.dtsi
+ create mode 100644 nvidia/platform/t210/porg/kernel-dts/tegra210-jetson_nano_module-pinmux.dtsi
+ create mode 100644 nvidia/platform/t210/porg/kernel-dts/tegra210-p3448-0002-dvr-v02.dts
+
+diff --git a/nvidia/platform/t210/porg/kernel-dts/Makefile b/nvidia/platform/t210/porg/kernel-dts/Makefile
+index fd4bf1e91f29..f42cfcc53bff 100644
+--- a/nvidia/platform/t210/porg/kernel-dts/Makefile
++++ b/nvidia/platform/t210/porg/kernel-dts/Makefile
+@@ -3,7 +3,7 @@ old-dtbo := $(dtbo-y)
+ dtb-y :=
+ dtbo-y :=
+ makefile-path := platform/t210/porg/kernel-dts
+-
++dtb-$(CONFIG_ARCH_TEGRA_210_SOC) += tegra210-p3448-0002-dvr-v02.dtb
+ dtb-$(CONFIG_ARCH_TEGRA_210_SOC) += tegra210-p3448-0000-p3449-0000-a00.dtb
+ dtb-$(CONFIG_ARCH_TEGRA_210_SOC) += tegra210-p3448-0000-p3449-0000-a01.dtb
+ dtb-$(CONFIG_ARCH_TEGRA_210_SOC) += tegra210-p3448-0000-p3449-0000-a02.dtb
+diff --git a/nvidia/platform/t210/porg/kernel-dts/porg-platforms-dvr/tegra210-porg-adv7482.dtsi b/nvidia/platform/t210/porg/kernel-dts/porg-platforms-dvr/tegra210-porg-adv7482.dtsi
+new file mode 100644
+index 000000000000..6380377159f9
+--- /dev/null
++++ b/nvidia/platform/t210/porg/kernel-dts/porg-platforms-dvr/tegra210-porg-adv7482.dtsi
+@@ -0,0 +1,304 @@
++/*
++ * Copyright (c) 2018-2019, NVIDIA CORPORATION.  All rights reserved.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
++ * more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include <dt-bindings/media/camera.h>
++#include <dt-bindings/platform/t210/t210.h>
++
++/ {
++	host1x {
++		vi_base: vi {
++			num-channels = <1>;
++			ports {
++				#address-cells = <1>;
++				#size-cells = <0>;
++				vi_port0: port@0 {
++					reg = <0>;
++					adv748x_vi_in0: endpoint {
++						port-index = <0>;
++						bus-width = <4>;
++						remote-endpoint = <&adv748x_csi_out0>;
++					};
++				};
++			};
++		};
++
++		csi_base: nvcsi {
++			num-channels = <1>;
++			#address-cells = <1>;
++			#size-cells = <0>;
++			csi_chan0: channel@0 {
++				reg = <0>;
++				ports {
++					#address-cells = <1>;
++					#size-cells = <0>;
++					csi_chan0_port0: port@0 {
++						reg = <0>;
++						adv748x_csi_in0: endpoint@0 {
++							port-index = <0>;
++							bus-width = <4>;
++							remote-endpoint = <&adv748x_out0>;
++						};
++					};
++					csi_chan0_port1: port@1 {
++						reg = <1>;
++						adv748x_csi_out0: endpoint@1 {
++							remote-endpoint = <&adv748x_vi_in0>;
++						};
++					};
++				};
++			};
++		};
++
++		i2c@546c0000 {
++			adv748x_cam0: adv748x@70 {
++				compatible = "adi,adv7482";
++				/* I2C device address */
++				reg = <0x70>;
++
++				/* V4L2 device node location */
++				devnode = "video0";
++
++				/* Physical dimensions of sensor */
++				physical_w = "3.680";
++				physical_h = "2.760";
++
++				sensor_model = "adv7482";
++
++				use_sensor_mode_id = "true";
++
++				/**
++				* ==== Modes ====
++				* A modeX node is required to support v4l2 driver
++				* implementation with NVIDIA camera software stack
++				*
++				* == Signal properties ==
++				*
++				* phy_mode = "";
++				* PHY mode used by the MIPI lanes for this device
++				*
++				* tegra_sinterface = "";
++				* CSI Serial interface connected to tegra
++				* Incase of virtual HW devices, use virtual
++				* For SW emulated devices, use host
++				*
++				* pix_clk_hz = "";
++				* Sensor pixel clock used for calculations like exposure and framerate
++				*
++				* readout_orientation = "0";
++				* Based on camera module orientation.
++				* Only change readout_orientation if you specifically
++				* Program a different readout order for this mode
++				*
++				* == Image format Properties ==
++				*
++				* active_w = "";
++				* Pixel active region width
++				*
++				* active_h = "";
++				* Pixel active region height
++				*
++				* pixel_t = "";
++				* The sensor readout pixel pattern
++				*
++				* line_length = "";
++				* Pixel line length (width) for sensor mode.
++				*
++				* == Source Control Settings ==
++				*
++				* Gain factor used to convert fixed point integer to float
++				* Gain range [min_gain/gain_factor, max_gain/gain_factor]
++				* Gain step [step_gain/gain_factor is the smallest step that can be configured]
++				* Default gain [Default gain to be initialized for the control.
++				*     use min_gain_val as default for optimal results]
++				* Framerate factor used to convert fixed point integer to float
++				* Framerate range [min_framerate/framerate_factor, max_framerate/framerate_factor]
++				* Framerate step [step_framerate/framerate_factor is the smallest step that can be configured]
++				* Default Framerate [Default framerate to be initialized for the control.
++				*     use max_framerate to get required performance]
++				* Exposure factor used to convert fixed point integer to float
++				* For convenience use 1 sec = 1000000us as conversion factor
++				* Exposure range [min_exp_time/exposure_factor, max_exp_time/exposure_factor]
++				* Exposure step [step_exp_time/exposure_factor is the smallest step that can be configured]
++				* Default Exposure Time [Default exposure to be initialized for the control.
++				*     Set default exposure based on the default_framerate for optimal exposure settings]
++				*
++				* gain_factor = ""; (integer factor used for floating to fixed point conversion)
++				* min_gain_val = ""; (ceil to integer)
++				* max_gain_val = ""; (ceil to integer)
++				* step_gain_val = ""; (ceil to integer)
++				* default_gain = ""; (ceil to integer)
++				* Gain limits for mode
++				*
++				* exposure_factor = ""; (integer factor used for floating to fixed point conversion)
++				* min_exp_time = ""; (ceil to integer)
++				* max_exp_time = ""; (ceil to integer)
++				* step_exp_time = ""; (ceil to integer)
++				* default_exp_time = ""; (ceil to integer)
++				* Exposure Time limits for mode (sec)
++				*
++				* framerate_factor = ""; (integer factor used for floating to fixed point conversion)
++				* min_framerate = ""; (ceil to integer)
++				* max_framerate = ""; (ceil to integer)
++				* step_framerate = ""; (ceil to integer)
++				* default_framerate = ""; (ceil to integer)
++				* Framerate limits for mode (fps)
++				*
++				* embedded_metadata_height = "";
++				* Sensor embedded metadata height in units of rows.
++				* If sensor does not support embedded metadata value should be 0.
++				*/
++
++				mode0 {
++					mclk_khz = "24000";
++					num_lanes = "4";
++					tegra_sinterface = "serial_a";
++					phy_mode = "DPHY";
++					discontinuous_clk = "yes";
++					//discontinuous_clk = "no";
++					dpcm_enable = "false";
++					cil_settletime = "0";
++
++					active_w = "1920";
++					active_h = "1080";
++					pixel_t = "yuv_uyvy16";
++
++					mode_type = "yuv";
++					csi_pixel_bit_depth = "8";
++					pixel_phase = "uyvy";
++
++
++					readout_orientation = "0";
++					line_length = "5488";       // Total width
++					inherent_gain = "1";
++					mclk_multiplier = "6.25";   // pix_clk_hz/mclk_khz
++					pix_clk_hz = "150000000";   // Pixel clock HTotal*VTotal*FPS
++
++
++					gain_factor = "16";
++					framerate_factor = "1000000";
++					exposure_factor = "1000000";
++					min_gain_val = "16"; /* 1.0 */
++					max_gain_val = "256"; /* 16.0 */
++					step_gain_val = "1"; /* 0.125 */
++					min_hdr_ratio = "1";
++					max_hdr_ratio = "64";
++					min_framerate = "30000000"; /* 60 */
++					max_framerate = "30000000"; /* 60 */
++					step_framerate = "1";
++					min_exp_time = "34"; /* us */
++					max_exp_time = "550385"; /* us */
++					step_exp_time = "1";	
++
++					embedded_metadata_height = "0";
++				};				
++
++				ports {
++					#address-cells = <1>;
++					#size-cells = <0>;
++
++					port@0 {
++						reg = <0>;
++						adv748x_out0: endpoint@0 {
++							port-index = <0>;
++							bus-width = <4>;
++							remote-endpoint = <&adv748x_csi_in0>;
++						};
++					};
++				};				
++			};
++		};
++
++    };
++
++
++
++
++	lens_adv748x@RBPCV2 {
++		min_focus_distance = "0.0";
++		hyper_focal = "0.0";
++		focal_length = "3.04";
++		f_number = "2.0";
++		aperture = "0.0";
++	};
++};
++
++/ {
++	tcp: tegra-camera-platform {
++		compatible = "nvidia, tegra-camera-platform";
++
++		/**
++		* Physical settings to calculate max ISO BW
++		*
++		* num_csi_lanes = <>;
++		* Total number of CSI lanes when all cameras are active
++		*
++		* max_lane_speed = <>;
++		* Max lane speed in Kbit/s
++		*
++		* min_bits_per_pixel = <>;
++		* Min bits per pixel
++		*
++		* vi_peak_byte_per_pixel = <>;
++		* Max byte per pixel for the VI ISO case
++		*
++		* vi_bw_margin_pct = <>;
++		* Vi bandwidth margin in percentage
++		*
++		* max_pixel_rate = <>;
++		* Max pixel rate in Kpixel/s for the ISP ISO case
++		*
++		* isp_peak_byte_per_pixel = <>;
++		* Max byte per pixel for the ISP ISO case
++		*
++		* isp_bw_margin_pct = <>;
++		* Isp bandwidth margin in percentage
++		*/
++		num_csi_lanes = <4>;
++		max_lane_speed = <1500000>;
++		min_bits_per_pixel = <10>;
++		vi_peak_byte_per_pixel = <2>;
++		vi_bw_margin_pct = <25>;
++		max_pixel_rate = <240000>;
++		isp_peak_byte_per_pixel = <5>;
++		isp_bw_margin_pct = <25>;
++
++		/**
++		 * The general guideline for naming badge_info contains 3 parts, and is as follows,
++		 * The first part is the camera_board_id for the module; if the module is in a FFD
++		 * platform, then use the platform name for this part.
++		 * The second part contains the position of the module, ex. "rear" or "front".
++		 * The third part contains the last 6 characters of a part number which is found
++		 * in the module's specsheet from the vendor.
++		 */
++		modules {
++			cam_module0: module0 {
++				badge = "porg_front_RBPCV2";
++				position = "front";
++				orientation = "1";
++				cam_module0_drivernode0: drivernode0 {
++					pcl_id = "v4l2_sensor";
++					devname = "adv7482 7-0070";
++					proc-device-tree = "/proc/device-tree/host1x/i2c@546c0000/adv748x@70";
++				};
++				cam_module0_drivernode1: drivernode1 {
++					pcl_id = "v4l2_lens";
++					proc-device-tree = "/proc/device-tree/lens_adv748x@RBPCV2/";
++				};
++			};
++		};
++	};
++};
+diff --git a/nvidia/platform/t210/porg/kernel-dts/porg-platforms-dvr/tegra210-porg-adv7482_i2c.dtsi b/nvidia/platform/t210/porg/kernel-dts/porg-platforms-dvr/tegra210-porg-adv7482_i2c.dtsi
+new file mode 100644
+index 000000000000..01d5900ea56a
+--- /dev/null
++++ b/nvidia/platform/t210/porg/kernel-dts/porg-platforms-dvr/tegra210-porg-adv7482_i2c.dtsi
+@@ -0,0 +1,47 @@
++/*
++ * Copyright (c) 2021, NVIDIA CORPORATION.  All rights reserved.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
++ * more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include "tegra210-porg-adv7482.dtsi"
++
++#define GS_RESET		TEGRA_GPIO(E, 0)
++#define CAM1_PWDN		TEGRA_GPIO(S, 7)
++/ {
++    host1x {
++		i2c_video: i2c@546c0000 {
++			clock-frequency = <1000000>;
++			adv748x@70 {
++				reset-gpios = <&gpio CAM1_PWDN GPIO_ACTIVE_LOW>;
++				gs-reset-gpios = <&gpio GS_RESET GPIO_ACTIVE_HIGH>;
++			};
++		};
++	};
++
++    gpio@6000d000 {
++		camera-control-output-high {
++			gpio-hog;
++			output-high;
++			gpios = < CAM1_PWDN 0 >;
++			label = "cam1-pwdn";
++		};
++		gs_reset_output_low {
++			gpio-hog;
++			output-low;
++			gpios = < GS_RESET 0 >;
++			label = "gs-reset";
++		};
++	};
++};
+diff --git a/nvidia/platform/t210/porg/kernel-dts/porg-platforms-dvr/tegra210-porg-sdi_out.dtsi b/nvidia/platform/t210/porg/kernel-dts/porg-platforms-dvr/tegra210-porg-sdi_out.dtsi
+new file mode 100644
+index 000000000000..a5aff727314c
+--- /dev/null
++++ b/nvidia/platform/t210/porg/kernel-dts/porg-platforms-dvr/tegra210-porg-sdi_out.dtsi
+@@ -0,0 +1,45 @@
++/*
++ * Copyright (c) 2021, NVIDIA CORPORATION.  All rights reserved.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
++ * more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#define ADV7610_RSTn		TEGRA_GPIO(Y, 2)
++#define GS2962_RATE_SEL0	TEGRA_GPIO(E, 6)
++#define GS2962_RATE_SEL1	TEGRA_GPIO(Z, 0) // GS2962_RATE_SEL1  GPIO11(PCB pin216)  GPIOZ.0(dt)  
++/ {
++    gpio@6000d000 {
++		adv7610-output-high {
++			gpio-hog;
++			output-high;
++			gpios = < ADV7610_RSTn 0 >;
++			label = "ad7610-rstn";
++		};
++
++		gs2962_rate_sel0 {
++			gpio-hog;
++			output-high;
++			gpios = < GS2962_RATE_SEL0 0 >;
++			label = "gs2962-rate-sel0";
++		};	
++
++		gs2962_rate_sel1 {
++			gpio-hog;
++			output-high;
++			gpios = < GS2962_RATE_SEL1 0 >;
++			label = "gs2962-rate-sel1";
++		};	
++
++	};
++};
+diff --git a/nvidia/platform/t210/porg/kernel-dts/tegra210-jetson_nano_module-gpio-default.dtsi b/nvidia/platform/t210/porg/kernel-dts/tegra210-jetson_nano_module-gpio-default.dtsi
+new file mode 100644
+index 000000000000..92cc98cbaf8e
+--- /dev/null
++++ b/nvidia/platform/t210/porg/kernel-dts/tegra210-jetson_nano_module-gpio-default.dtsi
+@@ -0,0 +1,85 @@
++/*This dtsi file was generated by jetson_nano_module.xlsm Revision: 1.01 */
++/*
++ * Copyright (c) 2019, NVIDIA CORPORATION.  All rights reserved.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
++ * more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with this program; if not, write to the Free Software Foundation, Inc.,
++ * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
++ */
++
++#include <dt-bindings/gpio/tegra-gpio.h>
++
++/ {
++	gpio: gpio@6000d000 {
++		gpio-init-names = "default";
++		gpio-init-0 = <&gpio_default>;
++
++		gpio_default: default {
++			gpio-input = <
++				TEGRA_GPIO(BB, 0)
++				TEGRA_GPIO(B, 4)
++				TEGRA_GPIO(B, 5)
++				TEGRA_GPIO(B, 6)
++				TEGRA_GPIO(B, 7)
++				TEGRA_GPIO(DD, 0)
++				TEGRA_GPIO(E, 2)
++				TEGRA_GPIO(S, 5)
++				TEGRA_GPIO(A, 5)
++				TEGRA_GPIO(X, 4)
++				TEGRA_GPIO(X, 5)
++				TEGRA_GPIO(X, 6)
++				TEGRA_GPIO(Y, 1)
++				TEGRA_GPIO(V, 0)
++				TEGRA_GPIO(V, 1)
++				TEGRA_GPIO(Z, 2)
++				TEGRA_GPIO(J, 5)
++				TEGRA_GPIO(J, 6)
++				TEGRA_GPIO(J, 4)
++				TEGRA_GPIO(J, 7)
++				TEGRA_GPIO(G, 2)
++				TEGRA_GPIO(G, 3)
++				TEGRA_GPIO(C, 0)
++				TEGRA_GPIO(C, 1)
++				TEGRA_GPIO(C, 2)
++				TEGRA_GPIO(C, 3)
++				TEGRA_GPIO(C, 4)
++				TEGRA_GPIO(H, 2)
++				TEGRA_GPIO(H, 5)
++				TEGRA_GPIO(H, 6)
++				TEGRA_GPIO(I, 1)
++				TEGRA_GPIO(CC, 4)
++				>;
++			gpio-output-low = <
++				TEGRA_GPIO(E, 6)
++				TEGRA_GPIO(Z, 0)
++				TEGRA_GPIO(Z, 3)
++				TEGRA_GPIO(H, 0)
++				TEGRA_GPIO(H, 3)
++				TEGRA_GPIO(H, 4)
++				TEGRA_GPIO(H, 7)
++				TEGRA_GPIO(I, 0)
++				TEGRA_GPIO(I, 2)
++				>;
++			gpio-output-high = <
++				TEGRA_GPIO(E, 0)
++				TEGRA_GPIO(E, 7)
++				TEGRA_GPIO(S, 7)
++				TEGRA_GPIO(T, 0)
++				TEGRA_GPIO(A, 6)
++				TEGRA_GPIO(X, 3)
++				TEGRA_GPIO(Y, 2)
++				TEGRA_GPIO(CC, 7)
++				>;
++		};
++	};
++};
+diff --git a/nvidia/platform/t210/porg/kernel-dts/tegra210-jetson_nano_module-pinmux.dtsi b/nvidia/platform/t210/porg/kernel-dts/tegra210-jetson_nano_module-pinmux.dtsi
+new file mode 100644
+index 000000000000..48eb8e8b8cb0
+--- /dev/null
++++ b/nvidia/platform/t210/porg/kernel-dts/tegra210-jetson_nano_module-pinmux.dtsi
+@@ -0,0 +1,1347 @@
++/*This dtsi file was generated by jetson_nano_module.xlsm Revision: 1.01 */
++/*
++ * Copyright (c) 2019, NVIDIA CORPORATION.  All rights reserved.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
++ * more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with this program; if not, write to the Free Software Foundation, Inc.,
++ * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
++ */
++
++#include <dt-bindings/pinctrl/pinctrl-tegra.h>
++
++/ {
++	pinmux: pinmux@700008d4 {
++		status = "okay";
++		pinctrl-names = "default", "drive", "unused";
++		pinctrl-0 = <&pinmux_default>;
++		pinctrl-1 = <&drive_default>;
++		pinctrl-2 = <&pinmux_unused_lowpower>;
++
++		pinmux_default: common {
++			/* SFIO Pin Configuration */
++			dvfs_pwm_pbb1 {
++				nvidia,pins = "dvfs_pwm_pbb1";
++				nvidia,function = "cldvfs";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			dmic1_dat_pe1 {
++				nvidia,pins = "dmic1_dat_pe1";
++				nvidia,function = "i2s3";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			gen3_i2c_scl_pf0 {
++				nvidia,pins = "gen3_i2c_scl_pf0";
++				nvidia,function = "i2c3";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++				nvidia,io-high-voltage = <TEGRA_PIN_DISABLE>;
++			};
++
++			gen3_i2c_sda_pf1 {
++				nvidia,pins = "gen3_i2c_sda_pf1";
++				nvidia,function = "i2c3";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++				nvidia,io-high-voltage = <TEGRA_PIN_DISABLE>;
++			};
++
++			cam_i2c_scl_ps2 {
++				nvidia,pins = "cam_i2c_scl_ps2";
++				nvidia,function = "i2cvi";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++				nvidia,io-high-voltage = <TEGRA_PIN_ENABLE>;
++			};
++
++			cam_i2c_sda_ps3 {
++				nvidia,pins = "cam_i2c_sda_ps3";
++				nvidia,function = "i2cvi";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++				nvidia,io-high-voltage = <TEGRA_PIN_ENABLE>;
++			};
++
++			cam1_mclk_ps0 {
++				nvidia,pins = "cam1_mclk_ps0";
++				nvidia,function = "extperiph3";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			cam2_mclk_ps1 {
++				nvidia,pins = "cam2_mclk_ps1";
++				nvidia,function = "extperiph3";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			pex_l0_clkreq_n_pa1 {
++				nvidia,pins = "pex_l0_clkreq_n_pa1";
++				nvidia,function = "pe0";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++				nvidia,io-high-voltage = <TEGRA_PIN_ENABLE>;
++			};
++
++			pex_l0_rst_n_pa0 {
++				nvidia,pins = "pex_l0_rst_n_pa0";
++				nvidia,function = "pe0";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++				nvidia,io-high-voltage = <TEGRA_PIN_ENABLE>;
++			};
++
++			pex_l1_clkreq_n_pa4 {
++				nvidia,pins = "pex_l1_clkreq_n_pa4";
++				nvidia,function = "pe1";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++				nvidia,io-high-voltage = <TEGRA_PIN_ENABLE>;
++			};
++
++			pex_l1_rst_n_pa3 {
++				nvidia,pins = "pex_l1_rst_n_pa3";
++				nvidia,function = "pe1";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++				nvidia,io-high-voltage = <TEGRA_PIN_ENABLE>;
++			};
++
++			pex_wake_n_pa2 {
++				nvidia,pins = "pex_wake_n_pa2";
++				nvidia,function = "pe";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++				nvidia,io-high-voltage = <TEGRA_PIN_ENABLE>;
++			};
++
++			sdmmc1_clk_pm0 {
++				nvidia,pins = "sdmmc1_clk_pm0";
++				nvidia,function = "sdmmc1";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			sdmmc1_cmd_pm1 {
++				nvidia,pins = "sdmmc1_cmd_pm1";
++				nvidia,function = "sdmmc1";
++				nvidia,pull = <TEGRA_PIN_PULL_UP>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			sdmmc1_dat0_pm5 {
++				nvidia,pins = "sdmmc1_dat0_pm5";
++				nvidia,function = "sdmmc1";
++				nvidia,pull = <TEGRA_PIN_PULL_UP>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			sdmmc1_dat1_pm4 {
++				nvidia,pins = "sdmmc1_dat1_pm4";
++				nvidia,function = "sdmmc1";
++				nvidia,pull = <TEGRA_PIN_PULL_UP>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			sdmmc1_dat2_pm3 {
++				nvidia,pins = "sdmmc1_dat2_pm3";
++				nvidia,function = "sdmmc1";
++				nvidia,pull = <TEGRA_PIN_PULL_UP>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			sdmmc1_dat3_pm2 {
++				nvidia,pins = "sdmmc1_dat3_pm2";
++				nvidia,function = "sdmmc1";
++				nvidia,pull = <TEGRA_PIN_PULL_UP>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			sdmmc3_clk_pp0 {
++				nvidia,pins = "sdmmc3_clk_pp0";
++				nvidia,function = "sdmmc3";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			sdmmc3_cmd_pp1 {
++				nvidia,pins = "sdmmc3_cmd_pp1";
++				nvidia,function = "sdmmc3";
++				nvidia,pull = <TEGRA_PIN_PULL_UP>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			sdmmc3_dat0_pp5 {
++				nvidia,pins = "sdmmc3_dat0_pp5";
++				nvidia,function = "sdmmc3";
++				nvidia,pull = <TEGRA_PIN_PULL_UP>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			sdmmc3_dat1_pp4 {
++				nvidia,pins = "sdmmc3_dat1_pp4";
++				nvidia,function = "sdmmc3";
++				nvidia,pull = <TEGRA_PIN_PULL_UP>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			sdmmc3_dat2_pp3 {
++				nvidia,pins = "sdmmc3_dat2_pp3";
++				nvidia,function = "sdmmc3";
++				nvidia,pull = <TEGRA_PIN_PULL_UP>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			sdmmc3_dat3_pp2 {
++				nvidia,pins = "sdmmc3_dat3_pp2";
++				nvidia,function = "sdmmc3";
++				nvidia,pull = <TEGRA_PIN_PULL_UP>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			shutdown {
++				nvidia,pins = "shutdown";
++				nvidia,function = "shutdown";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			lcd_gpio2_pv4 {
++				nvidia,pins = "lcd_gpio2_pv4";
++				nvidia,function = "pwm1";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			pwr_i2c_scl_py3 {
++				nvidia,pins = "pwr_i2c_scl_py3";
++				nvidia,function = "i2cpmu";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++				nvidia,io-high-voltage = <TEGRA_PIN_DISABLE>;
++			};
++
++			pwr_i2c_sda_py4 {
++				nvidia,pins = "pwr_i2c_sda_py4";
++				nvidia,function = "i2cpmu";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++				nvidia,io-high-voltage = <TEGRA_PIN_DISABLE>;
++			};
++
++			clk_32k_in {
++				nvidia,pins = "clk_32k_in";
++				nvidia,function = "clk";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			clk_32k_out_py5 {
++				nvidia,pins = "clk_32k_out_py5";
++				nvidia,function = "soc";
++				nvidia,pull = <TEGRA_PIN_PULL_UP>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			pz1 {
++				nvidia,pins = "pz1";
++				nvidia,function = "sdmmc1";
++				nvidia,pull = <TEGRA_PIN_PULL_UP>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			pz5 {
++				nvidia,pins = "pz5";
++				nvidia,function = "soc";
++				nvidia,pull = <TEGRA_PIN_PULL_UP>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			core_pwr_req {
++				nvidia,pins = "core_pwr_req";
++				nvidia,function = "core";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			pwr_int_n {
++				nvidia,pins = "pwr_int_n";
++				nvidia,function = "pmi";
++				nvidia,pull = <TEGRA_PIN_PULL_UP>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			gen1_i2c_scl_pj1 {
++				nvidia,pins = "gen1_i2c_scl_pj1";
++				nvidia,function = "i2c1";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++				nvidia,io-high-voltage = <TEGRA_PIN_ENABLE>;
++			};
++
++			gen1_i2c_sda_pj0 {
++				nvidia,pins = "gen1_i2c_sda_pj0";
++				nvidia,function = "i2c1";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++				nvidia,io-high-voltage = <TEGRA_PIN_ENABLE>;
++			};
++
++			gen2_i2c_scl_pj2 {
++				nvidia,pins = "gen2_i2c_scl_pj2";
++				nvidia,function = "i2c2";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++				nvidia,io-high-voltage = <TEGRA_PIN_ENABLE>;
++			};
++
++			gen2_i2c_sda_pj3 {
++				nvidia,pins = "gen2_i2c_sda_pj3";
++				nvidia,function = "i2c2";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++				nvidia,io-high-voltage = <TEGRA_PIN_ENABLE>;
++			};
++
++			uart2_tx_pg0 {
++				nvidia,pins = "uart2_tx_pg0";
++				nvidia,function = "uartb";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			uart2_rx_pg1 {
++				nvidia,pins = "uart2_rx_pg1";
++				nvidia,function = "uartb";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			uart1_tx_pu0 {
++				nvidia,pins = "uart1_tx_pu0";
++				nvidia,function = "uarta";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			uart1_rx_pu1 {
++				nvidia,pins = "uart1_rx_pu1";
++				nvidia,function = "uarta";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			jtag_rtck {
++				nvidia,pins = "jtag_rtck";
++				nvidia,function = "jtag";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			uart3_tx_pd1 {
++				nvidia,pins = "uart3_tx_pd1";
++				nvidia,function = "uartc";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			uart3_rx_pd2 {
++				nvidia,pins = "uart3_rx_pd2";
++				nvidia,function = "uartc";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			uart3_rts_pd3 {
++				nvidia,pins = "uart3_rts_pd3";
++				nvidia,function = "uartc";
++				nvidia,pull = <TEGRA_PIN_PULL_UP>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			uart3_cts_pd4 {
++				nvidia,pins = "uart3_cts_pd4";
++				nvidia,function = "uartc";
++				nvidia,pull = <TEGRA_PIN_PULL_UP>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			uart4_tx_pi4 {
++				nvidia,pins = "uart4_tx_pi4";
++				nvidia,function = "uartd";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			uart4_rx_pi5 {
++				nvidia,pins = "uart4_rx_pi5";
++				nvidia,function = "uartd";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			uart4_rts_pi6 {
++				nvidia,pins = "uart4_rts_pi6";
++				nvidia,function = "uartd";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			uart4_cts_pi7 {
++				nvidia,pins = "uart4_cts_pi7";
++				nvidia,function = "uartd";
++				nvidia,pull = <TEGRA_PIN_PULL_UP>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			qspi_io0_pee2 {
++				nvidia,pins = "qspi_io0_pee2";
++				nvidia,function = "qspi";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			qspi_io1_pee3 {
++				nvidia,pins = "qspi_io1_pee3";
++				nvidia,function = "qspi";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			qspi_sck_pee0 {
++				nvidia,pins = "qspi_sck_pee0";
++				nvidia,function = "qspi";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			qspi_cs_n_pee1 {
++				nvidia,pins = "qspi_cs_n_pee1";
++				nvidia,function = "qspi";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			qspi_io2_pee4 {
++				nvidia,pins = "qspi_io2_pee4";
++				nvidia,function = "qspi";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			qspi_io3_pee5 {
++				nvidia,pins = "qspi_io3_pee5";
++				nvidia,function = "qspi";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			dap2_din_paa2 {
++				nvidia,pins = "dap2_din_paa2";
++				nvidia,function = "i2s2";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			dap2_dout_paa3 {
++				nvidia,pins = "dap2_dout_paa3";
++				nvidia,function = "i2s2";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			dap2_fs_paa0 {
++				nvidia,pins = "dap2_fs_paa0";
++				nvidia,function = "i2s2";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			dap2_sclk_paa1 {
++				nvidia,pins = "dap2_sclk_paa1";
++				nvidia,function = "i2s2";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			dp_hpd0_pcc6 {
++				nvidia,pins = "dp_hpd0_pcc6";
++				nvidia,function = "dp";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			hdmi_int_dp_hpd_pcc1 {
++				nvidia,pins = "hdmi_int_dp_hpd_pcc1";
++				nvidia,function = "dp";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++				nvidia,io-high-voltage = <TEGRA_PIN_DISABLE>;
++			};
++
++			hdmi_cec_pcc0 {
++				nvidia,pins = "hdmi_cec_pcc0";
++				nvidia,function = "cec";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++				nvidia,io-high-voltage = <TEGRA_PIN_ENABLE>;
++			};
++
++			/* GPIO Pin Configuration */
++			aud_mclk_pbb0 {
++				nvidia,pins = "aud_mclk_pbb0";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_UP>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			spi2_mosi_pb4 {
++				nvidia,pins = "spi2_mosi_pb4";
++				nvidia,function = "rsvd2";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			spi2_miso_pb5 {
++				nvidia,pins = "spi2_miso_pb5";
++				nvidia,function = "rsvd2";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			spi2_sck_pb6 {
++				nvidia,pins = "spi2_sck_pb6";
++				nvidia,function = "rsvd2";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			spi2_cs0_pb7 {
++				nvidia,pins = "spi2_cs0_pb7";
++				nvidia,function = "rsvd2";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			spi2_cs1_pdd0 {
++				nvidia,pins = "spi2_cs1_pdd0";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			dmic1_clk_pe0 {
++				nvidia,pins = "dmic1_clk_pe0";
++				nvidia,function = "rsvd2";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			dmic2_clk_pe2 {
++				nvidia,pins = "dmic2_clk_pe2";
++				nvidia,function = "rsvd2";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			pe6 {
++				nvidia,pins = "pe6";
++				nvidia,function = "rsvd0";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			pe7 {
++				nvidia,pins = "pe7";
++				nvidia,function = "rsvd0";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			cam_af_en_ps5 {
++				nvidia,pins = "cam_af_en_ps5";
++				nvidia,function = "rsvd2";
++				nvidia,pull = <TEGRA_PIN_PULL_UP>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			cam1_pwdn_ps7 {
++				nvidia,pins = "cam1_pwdn_ps7";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			cam2_pwdn_pt0 {
++				nvidia,pins = "cam2_pwdn_pt0";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			sata_led_active_pa5 {
++				nvidia,pins = "sata_led_active_pa5";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_UP>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			pa6 {
++				nvidia,pins = "pa6";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			als_prox_int_px3 {
++				nvidia,pins = "als_prox_int_px3";
++				nvidia,function = "rsvd0";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			temp_alert_px4 {
++				nvidia,pins = "temp_alert_px4";
++				nvidia,function = "rsvd0";
++				nvidia,pull = <TEGRA_PIN_PULL_UP>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			button_power_on_px5 {
++				nvidia,pins = "button_power_on_px5";
++				nvidia,function = "rsvd0";
++				nvidia,pull = <TEGRA_PIN_PULL_UP>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			button_vol_up_px6 {
++				nvidia,pins = "button_vol_up_px6";
++				nvidia,function = "rsvd0";
++				nvidia,pull = <TEGRA_PIN_PULL_UP>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			button_home_py1 {
++				nvidia,pins = "button_home_py1";
++				nvidia,function = "rsvd0";
++				nvidia,pull = <TEGRA_PIN_PULL_UP>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			lcd_te_py2 {
++				nvidia,pins = "lcd_te_py2";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			lcd_bl_pwm_pv0 {
++				nvidia,pins = "lcd_bl_pwm_pv0";
++				nvidia,function = "rsvd3";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			lcd_bl_en_pv1 {
++				nvidia,pins = "lcd_bl_en_pv1";
++				nvidia,function = "rsvd0";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			pz0 {
++				nvidia,pins = "pz0";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			pz2 {
++				nvidia,pins = "pz2";
++				nvidia,function = "rsvd2";
++				nvidia,pull = <TEGRA_PIN_PULL_UP>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			pz3 {
++				nvidia,pins = "pz3";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			dap4_din_pj5 {
++				nvidia,pins = "dap4_din_pj5";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			dap4_dout_pj6 {
++				nvidia,pins = "dap4_dout_pj6";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			dap4_fs_pj4 {
++				nvidia,pins = "dap4_fs_pj4";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			dap4_sclk_pj7 {
++				nvidia,pins = "dap4_sclk_pj7";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			uart2_rts_pg2 {
++				nvidia,pins = "uart2_rts_pg2";
++				nvidia,function = "rsvd2";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			uart2_cts_pg3 {
++				nvidia,pins = "uart2_cts_pg3";
++				nvidia,function = "rsvd2";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			spi1_mosi_pc0 {
++				nvidia,pins = "spi1_mosi_pc0";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			spi1_miso_pc1 {
++				nvidia,pins = "spi1_miso_pc1";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			spi1_sck_pc2 {
++				nvidia,pins = "spi1_sck_pc2";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			spi1_cs0_pc3 {
++				nvidia,pins = "spi1_cs0_pc3";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_UP>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			spi1_cs1_pc4 {
++				nvidia,pins = "spi1_cs1_pc4";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_UP>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			wifi_en_ph0 {
++				nvidia,pins = "wifi_en_ph0";
++				nvidia,function = "rsvd0";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			wifi_wake_ap_ph2 {
++				nvidia,pins = "wifi_wake_ap_ph2";
++				nvidia,function = "rsvd0";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			ap_wake_bt_ph3 {
++				nvidia,pins = "ap_wake_bt_ph3";
++				nvidia,function = "rsvd0";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			bt_rst_ph4 {
++				nvidia,pins = "bt_rst_ph4";
++				nvidia,function = "rsvd0";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			bt_wake_ap_ph5 {
++				nvidia,pins = "bt_wake_ap_ph5";
++				nvidia,function = "rsvd0";
++				nvidia,pull = <TEGRA_PIN_PULL_UP>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			ph6 {
++				nvidia,pins = "ph6";
++				nvidia,function = "rsvd0";
++				nvidia,pull = <TEGRA_PIN_PULL_UP>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			ap_wake_nfc_ph7 {
++				nvidia,pins = "ap_wake_nfc_ph7";
++				nvidia,function = "rsvd0";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			nfc_en_pi0 {
++				nvidia,pins = "nfc_en_pi0";
++				nvidia,function = "rsvd0";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			nfc_int_pi1 {
++				nvidia,pins = "nfc_int_pi1";
++				nvidia,function = "rsvd0";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++			};
++
++			gps_en_pi2 {
++				nvidia,pins = "gps_en_pi2";
++				nvidia,function = "rsvd0";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			pcc7 {
++				nvidia,pins = "pcc7";
++				nvidia,function = "rsvd0";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++				nvidia,io-high-voltage = <TEGRA_PIN_ENABLE>;
++			};
++
++			usb_vbus_en0_pcc4 {
++				nvidia,pins = "usb_vbus_en0_pcc4";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_UP>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++				nvidia,io-high-voltage = <TEGRA_PIN_DISABLE>;
++			};
++		};
++
++		pinmux_unused_lowpower: unused_lowpower {
++			dvfs_clk_pbb2 {
++				nvidia,pins = "dvfs_clk_pbb2";
++				nvidia,function = "rsvd0";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			gpio_x1_aud_pbb3 {
++				nvidia,pins = "gpio_x1_aud_pbb3";
++				nvidia,function = "rsvd0";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			gpio_x3_aud_pbb4 {
++				nvidia,pins = "gpio_x3_aud_pbb4";
++				nvidia,function = "rsvd0";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			dap1_din_pb1 {
++				nvidia,pins = "dap1_din_pb1";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			dap1_dout_pb2 {
++				nvidia,pins = "dap1_dout_pb2";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			dap1_fs_pb0 {
++				nvidia,pins = "dap1_fs_pb0";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			dap1_sclk_pb3 {
++				nvidia,pins = "dap1_sclk_pb3";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			dmic2_dat_pe3 {
++				nvidia,pins = "dmic2_dat_pe3";
++				nvidia,function = "rsvd2";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			dmic3_clk_pe4 {
++				nvidia,pins = "dmic3_clk_pe4";
++				nvidia,function = "rsvd2";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			dmic3_dat_pe5 {
++				nvidia,pins = "dmic3_dat_pe5";
++				nvidia,function = "rsvd2";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			cam_rst_ps4 {
++				nvidia,pins = "cam_rst_ps4";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			cam_flash_en_ps6 {
++				nvidia,pins = "cam_flash_en_ps6";
++				nvidia,function = "rsvd2";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			cam1_strobe_pt1 {
++				nvidia,pins = "cam1_strobe_pt1";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			motion_int_px2 {
++				nvidia,pins = "motion_int_px2";
++				nvidia,function = "rsvd0";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			touch_rst_pv6 {
++				nvidia,pins = "touch_rst_pv6";
++				nvidia,function = "rsvd0";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			touch_clk_pv7 {
++				nvidia,pins = "touch_clk_pv7";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			touch_int_px1 {
++				nvidia,pins = "touch_int_px1";
++				nvidia,function = "rsvd0";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			modem_wake_ap_px0 {
++				nvidia,pins = "modem_wake_ap_px0";
++				nvidia,function = "rsvd0";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			button_vol_down_px7 {
++				nvidia,pins = "button_vol_down_px7";
++				nvidia,function = "rsvd0";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			button_slide_sw_py0 {
++				nvidia,pins = "button_slide_sw_py0";
++				nvidia,function = "rsvd0";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			lcd_rst_pv2 {
++				nvidia,pins = "lcd_rst_pv2";
++				nvidia,function = "rsvd0";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			lcd_gpio1_pv3 {
++				nvidia,pins = "lcd_gpio1_pv3";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			ap_ready_pv5 {
++				nvidia,pins = "ap_ready_pv5";
++				nvidia,function = "rsvd0";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			pz4 {
++				nvidia,pins = "pz4";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			clk_req {
++				nvidia,pins = "clk_req";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			cpu_pwr_req {
++				nvidia,pins = "cpu_pwr_req";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			uart1_rts_pu2 {
++				nvidia,pins = "uart1_rts_pu2";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			uart1_cts_pu3 {
++				nvidia,pins = "uart1_cts_pu3";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			pk0 {
++				nvidia,pins = "pk0";
++				nvidia,function = "rsvd2";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			pk1 {
++				nvidia,pins = "pk1";
++				nvidia,function = "rsvd2";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			pk2 {
++				nvidia,pins = "pk2";
++				nvidia,function = "rsvd2";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			pk3 {
++				nvidia,pins = "pk3";
++				nvidia,function = "rsvd2";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			pk4 {
++				nvidia,pins = "pk4";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			pk5 {
++				nvidia,pins = "pk5";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			pk6 {
++				nvidia,pins = "pk6";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			pk7 {
++				nvidia,pins = "pk7";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			pl0 {
++				nvidia,pins = "pl0";
++				nvidia,function = "rsvd0";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			pl1 {
++				nvidia,pins = "pl1";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			spi4_mosi_pc7 {
++				nvidia,pins = "spi4_mosi_pc7";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			spi4_miso_pd0 {
++				nvidia,pins = "spi4_miso_pd0";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			spi4_sck_pc5 {
++				nvidia,pins = "spi4_sck_pc5";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			spi4_cs0_pc6 {
++				nvidia,pins = "spi4_cs0_pc6";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			wifi_rst_ph1 {
++				nvidia,pins = "wifi_rst_ph1";
++				nvidia,function = "rsvd0";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			gps_rst_pi3 {
++				nvidia,pins = "gps_rst_pi3";
++				nvidia,function = "rsvd0";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			spdif_out_pcc2 {
++				nvidia,pins = "spdif_out_pcc2";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			spdif_in_pcc3 {
++				nvidia,pins = "spdif_in_pcc3";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++			};
++
++			usb_vbus_en1_pcc5 {
++				nvidia,pins = "usb_vbus_en1_pcc5";
++				nvidia,function = "rsvd1";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_ENABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++				nvidia,io-high-voltage = <TEGRA_PIN_DISABLE>;
++			};
++		};
++
++		drive_default: drive {
++		};
++	};
++};
+diff --git a/nvidia/platform/t210/porg/kernel-dts/tegra210-p3448-0002-dvr-v02.dts b/nvidia/platform/t210/porg/kernel-dts/tegra210-p3448-0002-dvr-v02.dts
+new file mode 100644
+index 000000000000..e0822c77280b
+--- /dev/null
++++ b/nvidia/platform/t210/porg/kernel-dts/tegra210-p3448-0002-dvr-v02.dts
+@@ -0,0 +1,75 @@
++/*
++ * arch/arm64/boot/dts/tegra210-p3448-0002-p3449-0000-b00.dts
++ *
++ * Copyright (c) 2018-2021, NVIDIA CORPORATION.  All rights reserved.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; version 2 of the License.
++ *
++ * This program is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
++ * more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with this program; if not, write to the Free Software Foundation, Inc.,
++ * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
++ *
++ */
++
++#include "tegra210-porg-p3448-common.dtsi"
++#include "porg-platforms/tegra210-porg-p3448-emc-a00.dtsi"
++
++#include "tegra210-jetson_nano_module-gpio-default.dtsi"
++#include "tegra210-jetson_nano_module-pinmux.dtsi"
++
++#include "porg-platforms-dvr/tegra210-porg-adv7482_i2c.dtsi"
++#include "porg-platforms-dvr/tegra210-porg-sdi_out.dtsi"
++
++
++
++/ {
++	model = "NVIDIA Jetson Nano Developer Kit";
++	compatible ="nvidia,p3449-0000-b00+p3448-0002-b00", "nvidia,jetson-nano", "nvidia,tegra210";
++	nvidia,dtsfilename = __FILE__;
++
++	sdhci@700b0600 { /* SDMMC4 for EMMC */
++		status = "okay";
++	};
++
++	sdhci@700b0000 { /* SDMMC1 for SD card */
++		status = "disabled";
++	};
++
++	sdhci@700b0400 { /* SDMMC3 for SD card */
++		status = "okay";
++		cd-gpios = <&gpio TEGRA_GPIO(Z, 2) 0>;
++		sd-uhs-sdr104;
++		sd-uhs-sdr50;
++		sd-uhs-sdr25;
++		sd-uhs-sdr12; 
++		uhs-mask = <0xc>;
++		no-mmc;
++	};
++
++    gpio@6000d000 {
++		sd-output-high {
++			gpio-hog;
++			output-high;
++			gpios = < TEGRA_GPIO(E, 7) 0 >;
++			label = "sd-pw";
++		};
++	};
++
++	spi@70410000 { /* QSPI */
++		status = "disabled";
++	};
++
++	host1x {
++		/* tegradc.1 */
++		dc@54240000 {
++			status = "disable";
++		};
++	};
++};
+\ No newline at end of file
+diff --git a/nvidia/platform/t210/porg/kernel-dts/tegra210-porg-p3448-common.dtsi b/nvidia/platform/t210/porg/kernel-dts/tegra210-porg-p3448-common.dtsi
+index bf4875be6fd9..69d2ee01445d 100644
+--- a/nvidia/platform/t210/porg/kernel-dts/tegra210-porg-p3448-common.dtsi
++++ b/nvidia/platform/t210/porg/kernel-dts/tegra210-porg-p3448-common.dtsi
+@@ -26,7 +26,7 @@
+ #include <tegra210-soc/tegra210-thermal-Tboard-Tdiode.dtsi>
+ #include "porg-platforms/tegra210-porg-power-tree-p3448-0000-a00.dtsi"
+ #include "porg-platforms/tegra210-pinmux-drive-sdmmc-common.dtsi"
+-#include "porg-platforms/tegra210-porg-pwm-fan.dtsi"
++//#include "porg-platforms/tegra210-porg-pwm-fan.dtsi"
+ #include <t210-common-platforms/tegra210-ers-hdmi-e2190-1100-a00.dtsi>
+ #include <t210-common-platforms/tegra210-dp.dtsi>
+ #include <t210-common-platforms/tegra210-thermal-userspace-alert.dtsi>
